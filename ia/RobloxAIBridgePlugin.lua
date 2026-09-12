@@ -1,4 +1,4 @@
-﻿local HttpService = game:GetService("HttpService")
+local HttpService = game:GetService("HttpService")
 local ScriptEditorService = game:GetService("ScriptEditorService")
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local StudioTestService = game:GetService("StudioTestService")
@@ -9,6 +9,12 @@ local NEXT_URL = BASE_URL .. "/next"
 local HEALTH_URL = BASE_URL .. "/health"
 local PROJECT_SCAN_URL = "http://127.0.0.1:3001/project-scan"
 local TEST_RESULTS_URL = BASE_URL .. "/test-results"
+
+local INTERVALO_ESCANEO = 300
+local MAX_SOURCE_CHARS = 340000
+local MAX_BATCH_CHARS = 700000
+local MAX_SCRIPTS_PER_BATCH = 25
+local MAX_OBJECTS = 1500
 
 local toolbar = plugin:CreateToolbar("Roblox AI")
 local button = toolbar:CreateButton(
@@ -22,13 +28,6 @@ local conectado = false
 local consultando = false
 local escaneando = false
 local ultimoEscaneo = 0
-local INTERVALO_ESCANEO = 300
-
-local MAX_SOURCE_CHARS = 340000
-local MAX_BATCH_CHARS = 700000
-local MAX_SCRIPTS_PER_BATCH = 25
-local MAX_OBJECTS = 1500
-local EXTENDED_MARKER = "__ROBLOX_AI_EXTENDED_ACTION__"
 
 local SERVICIOS = {
 	ServerScriptService = game:GetService("ServerScriptService"),
@@ -46,7 +45,7 @@ local SERVICIOS = {
 	Chat = game:GetService("Chat")
 }
 
-local TIPOS_SCRIPT = {
+local SCRIPT_TYPES = {
 	create_script = "Script",
 	create_local_script = "LocalScript",
 	create_module_script = "ModuleScript",
@@ -58,58 +57,11 @@ local TIPOS_SCRIPT = {
 	delete_module_script = "ModuleScript"
 }
 
-local TIPOS_REMOTOS = {
+local REMOTE_TYPES = {
 	create_remote_event = "RemoteEvent",
 	create_remote_function = "RemoteFunction",
 	delete_remote_event = "RemoteEvent",
 	delete_remote_function = "RemoteFunction"
-}
-
-local CLASES_OBJETOS = {
-	Folder = true,
-	Model = true,
-	Part = true,
-	MeshPart = true,
-	UnionOperation = true,
-	Tool = true,
-	RemoteEvent = true,
-	RemoteFunction = true,
-	BindableEvent = true,
-	BindableFunction = true,
-	Attachment = true,
-	Motor6D = true,
-	WeldConstraint = true,
-	ProximityPrompt = true,
-	ScreenGui = true,
-	Frame = true,
-	TextLabel = true,
-	TextButton = true,
-	TextBox = true,
-	ImageLabel = true,
-	ImageButton = true
-}
-
-local CLASES_CREABLES = {
-	Folder = true,
-	Model = true,
-	Part = true,
-	MeshPart = true,
-	Tool = true,
-	RemoteEvent = true,
-	RemoteFunction = true,
-	BindableEvent = true,
-	BindableFunction = true,
-	Attachment = true,
-	Motor6D = true,
-	WeldConstraint = true,
-	ProximityPrompt = true,
-	ScreenGui = true,
-	Frame = true,
-	TextLabel = true,
-	TextButton = true,
-	TextBox = true,
-	ImageLabel = true,
-	ImageButton = true
 }
 
 local function debeIgnorar(objeto)
@@ -120,6 +72,7 @@ local function debeIgnorar(objeto)
 		or string.find(nombre, "geminibridgeplugin", 1, true) ~= nil
 		or string.find(ruta, "geminibridgeplugin", 1, true) ~= nil
 		or string.find(ruta, "roblox ai bridge", 1, true) ~= nil
+		or string.find(ruta, "projectcontext", 1, true) ~= nil
 end
 
 local function obtenerContenedor(ruta, crearCarpetas)
@@ -127,7 +80,7 @@ local function obtenerContenedor(ruta, crearCarpetas)
 		return nil
 	end
 
-	local partes = string.split(ruta, "/")
+	local partes = string.split(ruta:gsub("\\", "/"), "/")
 	local actual = SERVICIOS[partes[1]]
 	if not actual then
 		return nil
@@ -202,15 +155,42 @@ local function obtenerSource(objeto)
 		return source
 	end
 
-	local okFallback, sourceFallback = pcall(function()
+	local okFallback, fallback = pcall(function()
 		return objeto.Source
 	end)
 
-	if okFallback and type(sourceFallback) == "string" then
-		return sourceFallback
+	if okFallback and type(fallback) == "string" then
+		return fallback
 	end
 
 	return nil
+end
+
+local function actualizarSource(objeto, source)
+	if type(source) ~= "string" then
+		return false
+	end
+
+	local ok, err = pcall(function()
+		ScriptEditorService:UpdateSourceAsync(objeto, function()
+			return source
+		end)
+	end)
+
+	if ok then
+		return true
+	end
+
+	local okFallback, fallbackError = pcall(function()
+		objeto.Source = source
+	end)
+
+	if not okFallback then
+		warn("[Roblox AI] No se pudo actualizar Source:", err or fallbackError)
+		return false
+	end
+
+	return true
 end
 
 local function recolectarScripts()
@@ -243,7 +223,7 @@ local function recolectarScripts()
 	return resultado
 end
 
-local function recolectarObjetosImportantes()
+local function recolectarObjetos()
 	local resultado = {}
 
 	for _, raiz in pairs(SERVICIOS) do
@@ -252,7 +232,7 @@ local function recolectarObjetosImportantes()
 				break
 			end
 
-			if not debeIgnorar(objeto) and CLASES_OBJETOS[objeto.ClassName] then
+			if not debeIgnorar(objeto) then
 				local ruta = obtenerRuta(objeto)
 				if ruta then
 					table.insert(resultado, {
@@ -300,7 +280,7 @@ local function dividirLotes(scripts)
 end
 
 local function enviarEscaneo(scripts, objects, reset)
-	local ok, respuesta = pcall(function()
+	local ok, response = pcall(function()
 		return HttpService:RequestAsync({
 			Url = PROJECT_SCAN_URL,
 			Method = "POST",
@@ -316,8 +296,8 @@ local function enviarEscaneo(scripts, objects, reset)
 		})
 	end)
 
-	if not ok or not respuesta.Success then
-		warn("[Roblox AI] Error enviando contexto:", ok and respuesta.Body or respuesta)
+	if not ok or not response.Success then
+		warn("[Roblox AI] Error enviando contexto:", ok and response.Body or response)
 		return false
 	end
 
@@ -332,7 +312,7 @@ local function escanearProyecto()
 	escaneando = true
 
 	local scripts = recolectarScripts()
-	local objects = recolectarObjetosImportantes()
+	local objects = recolectarObjetos()
 	local lotes = dividirLotes(scripts)
 	local correcto = true
 
@@ -350,7 +330,7 @@ local function escanearProyecto()
 
 	if correcto then
 		ultimoEscaneo = os.clock()
-		print("[Roblox AI] âœ… Contexto actualizado:", #scripts, "scripts |", #objects, "objetos detectados")
+		print("[Roblox AI] ✅ Contexto actualizado:", #scripts, "scripts |", #objects, "objetos detectados")
 	end
 
 	escaneando = false
@@ -358,213 +338,29 @@ local function escanearProyecto()
 end
 
 local function comprobarServidor()
-	local ok, respuesta = pcall(function()
+	local ok, response = pcall(function()
 		return HttpService:RequestAsync({
 			Url = HEALTH_URL,
 			Method = "GET"
 		})
 	end)
 
-	if not ok or not respuesta.Success then
-		warn("[Roblox AI] No se pudo conectar al servidor OmniRoute:", ok and respuesta.Body or respuesta)
+	if not ok or not response.Success then
+		warn("[Roblox AI] No se pudo conectar al servidor:", ok and response.Body or response)
 		return false
 	end
 
-	local datosOk, datos = pcall(function()
-		return HttpService:JSONDecode(respuesta.Body)
+	local jsonOk, data = pcall(function()
+		return HttpService:JSONDecode(response.Body)
 	end)
 
-	if not datosOk or type(datos) ~= "table" then
-		warn("[Roblox AI] /health devolviÃ³ datos invÃ¡lidos.")
+	if not jsonOk or type(data) ~= "table" or data.ok ~= true then
+		warn("[Roblox AI] /health devolvio datos invalidos.")
 		return false
 	end
 
-	if datos.ok ~= true then
-		warn("[Roblox AI] OmniRoute no estÃ¡ disponible.")
-		return false
-	end
-
-	print("[Roblox AI] âœ… OmniRoute:", tostring(datos.model))
-	print("[Roblox AI] ðŸ§  Reasoning:", tostring(datos.reasoningEffort))
+	print("[Roblox AI] ✅ OmniRoute:", tostring(data.model))
 	return true
-end
-
-local function actualizarSource(objeto, code)
-	local ok, err = pcall(function()
-		ScriptEditorService:UpdateSourceAsync(objeto, function()
-			return code
-		end)
-	end)
-
-	if not ok then
-		warn("[Roblox AI] No se pudo actualizar Source:", err)
-		return false
-	end
-
-	return true
-end
-
-local function ejecutarScriptAction(action)
-	local tipo = TIPOS_SCRIPT[action.type]
-	if not tipo then
-		return false
-	end
-
-	local ruta = tostring(action.path or "")
-	local nombre = tostring(action.name or "")
-	local crear = action.type:sub(1, 7) == "create_"
-	local contenedor = obtenerContenedor(ruta, crear)
-
-	if not contenedor or nombre == "" then
-		warn("[Roblox AI] Ruta invÃ¡lida:", ruta, nombre)
-		return false
-	end
-
-	local existente = contenedor:FindFirstChild(nombre)
-
-	if crear then
-		if existente then
-			warn("[Roblox AI] CREATE rechazado: ya existe", existente:GetFullName(), existente.ClassName)
-			return false
-		end
-
-		if type(action.code) ~= "string" or action.code == "" then
-			return false
-		end
-
-		local nuevo = Instance.new(tipo)
-		nuevo.Name = nombre
-		nuevo.Source = action.code
-		nuevo.Parent = contenedor
-
-		if nuevo:IsA("Script") or nuevo:IsA("LocalScript") then
-			nuevo.Enabled = true
-		end
-
-		print("[Roblox AI] âœ… CREADO:", nuevo:GetFullName())
-		ChangeHistoryService:SetWaypoint("OmniRoute crear " .. nombre)
-		return true
-	end
-
-	if action.type:sub(1, 7) == "update_" then
-		if not existente or existente.ClassName ~= tipo then
-			warn("[Roblox AI] UPDATE rechazado:", ruta .. "/" .. nombre)
-			return false
-		end
-
-		if type(action.code) ~= "string" or action.code == "" then
-			return false
-		end
-
-		if actualizarSource(existente, action.code) then
-			if existente:IsA("Script") or existente:IsA("LocalScript") then
-				existente.Enabled = true
-			end
-			print("[Roblox AI] âœï¸ ACTUALIZADO:", existente:GetFullName())
-			ChangeHistoryService:SetWaypoint("OmniRoute actualizar " .. nombre)
-			return true
-		end
-
-		return false
-	end
-
-	if action.type:sub(1, 7) == "delete_" then
-		if not existente or existente.ClassName ~= tipo then
-			warn("[Roblox AI] DELETE rechazado:", ruta .. "/" .. nombre)
-			return false
-		end
-
-		local fullName = existente:GetFullName()
-		existente:Destroy()
-		print("[Roblox AI] ðŸ—‘ï¸ ELIMINADO:", fullName)
-		ChangeHistoryService:SetWaypoint("OmniRoute eliminar " .. nombre)
-		return true
-	end
-
-	return false
-end
-
-local function ejecutarRemoteAction(action)
-	local clase = TIPOS_REMOTOS[action.type]
-	if not clase then
-		return false
-	end
-
-	local ruta = tostring(action.path or "")
-	local nombre = tostring(action.name or "")
-	local crear = action.type:sub(1, 7) == "create_"
-	local contenedor = obtenerContenedor(ruta, crear)
-
-	if not contenedor or nombre == "" then
-		return false
-	end
-
-	local existente = contenedor:FindFirstChild(nombre)
-
-	if crear then
-		if existente then
-			if existente.ClassName == clase then
-				print("[Roblox AI] â„¹ï¸ Ya existe:", existente:GetFullName())
-				return true
-			end
-			warn("[Roblox AI] CREATE REMOTE rechazado: ya existe otro objeto con ese nombre.")
-			return false
-		end
-
-		local nuevo = Instance.new(clase)
-		nuevo.Name = nombre
-		nuevo.Parent = contenedor
-		print("[Roblox AI] âœ… CREADO:", nuevo:GetFullName(), "(" .. clase .. ")")
-		ChangeHistoryService:SetWaypoint("OmniRoute crear " .. nombre)
-		return true
-	end
-
-	if not existente or existente.ClassName ~= clase then
-		warn("[Roblox AI] DELETE REMOTE rechazado:", ruta .. "/" .. nombre)
-		return false
-	end
-
-	existente:Destroy()
-	print("[Roblox AI] ðŸ—‘ï¸ REMOTO ELIMINADO:", ruta .. "/" .. nombre)
-	ChangeHistoryService:SetWaypoint("OmniRoute eliminar " .. nombre)
-	return true
-end
-
-local function ejecutarCarpeta(action)
-	local ruta = tostring(action.path or "")
-	local nombre = tostring(action.name or "")
-
-	if nombre == "" or string.find(nombre, "/", 1, true) or string.find(nombre, "\\", 1, true) then
-		return false
-	end
-
-	if action.type == "create_folder" then
-		local contenedor = obtenerContenedor(ruta, true)
-		if not contenedor then return false end
-		if contenedor:FindFirstChild(nombre) then return true end
-
-		local carpeta = Instance.new("Folder")
-		carpeta.Name = nombre
-		carpeta.Parent = contenedor
-		print("[Roblox AI] ðŸ“ CARPETA CREADA:", carpeta:GetFullName())
-		ChangeHistoryService:SetWaypoint("OmniRoute crear carpeta " .. nombre)
-		return true
-	end
-
-	if action.type == "delete_folder" then
-		local contenedor = obtenerContenedor(ruta, false)
-		if not contenedor then return false end
-
-		local carpeta = contenedor:FindFirstChild(nombre)
-		if not carpeta or not carpeta:IsA("Folder") then return false end
-
-		carpeta:Destroy()
-		print("[Roblox AI] ðŸ—‘ï¸ CARPETA ELIMINADA:", ruta .. "/" .. nombre)
-		ChangeHistoryService:SetWaypoint("OmniRoute eliminar carpeta " .. nombre)
-		return true
-	end
-
-	return false
 end
 
 local function convertirValor(valor)
@@ -600,16 +396,10 @@ local function convertirValor(valor)
 	elseif tipo == "BrickColor" then
 		return BrickColor.new(tostring(valor.value or "Medium stone grey"))
 	elseif tipo == "Enum" then
-		local enumNombre = tostring(valor.enum or "")
-		local enumValor = tostring(valor.value or "")
-		local enumObjeto = Enum[enumNombre]
+		local enumObjeto = Enum[tostring(valor.enum or "")]
 		if enumObjeto then
-			local enumItem = enumObjeto[enumValor]
-			if enumItem then
-				return enumItem
-			end
+			return enumObjeto[tostring(valor.value or "")]
 		end
-		return nil
 	end
 
 	return valor
@@ -632,26 +422,17 @@ local function aplicarPropiedad(objeto, nombre, valor)
 	end
 
 	local convertido = convertirValor(valor)
-	if convertido == nil and type(valor) == "table" then
-		warn("[Roblox AI] Valor tipado invÃ¡lido para propiedad:", nombre)
-		return false
-	end
 
-	local ok, errorMensaje = pcall(function()
+	local ok, err = pcall(function()
 		objeto[nombre] = convertido
 	end)
 
 	if not ok then
-		warn(
-			"[Roblox AI] No se pudo cambiar propiedad:",
-			objeto:GetFullName(),
-			nombre,
-			errorMensaje
-		)
+		warn("[Roblox AI] No se pudo cambiar", objeto:GetFullName(), nombre, err)
 		return false
 	end
 
-	print("[Roblox AI] âš™ï¸ PROPIEDAD:", objeto:GetFullName(), nombre, "=", tostring(convertido))
+	print("[Roblox AI] ⚙ PROPIEDAD:", objeto:GetFullName(), nombre, "=", tostring(convertido))
 	return true
 end
 
@@ -666,65 +447,317 @@ local function aplicarPropiedades(objeto, propiedades)
 			total += 1
 		end
 	end
+
 	return total
 end
 
 local function claseCoincide(objeto, className)
-	if not className or className == "" then
-		return true
-	end
-	return objeto.ClassName == className
+	return not className or className == "" or objeto.ClassName == className
 end
 
-local function enviarResultadoPrueba(resultado)
-	local ok, respuesta = pcall(function()
-		return HttpService:RequestAsync({
-			Url = TEST_RESULTS_URL,
-			Method = "POST",
-			Headers = {
-				["Content-Type"] = "application/json",
-				["Accept"] = "application/json"
-			},
-			Body = HttpService:JSONEncode(resultado)
-		})
-	end)
-
-	if not ok or not respuesta.Success then
-		warn("[Roblox AI] No se pudo enviar resultado de prueba:", ok and respuesta.Body or respuesta)
+local function ejecutarScriptAction(action)
+	local tipo = SCRIPT_TYPES[action.type]
+	if not tipo then
 		return false
 	end
 
+	local path = tostring(action.path or "")
+	local name = tostring(action.name or "")
+	local esCreate = action.type:sub(1, 7) == "create_"
+	local esDelete = action.type:sub(1, 7) == "delete_"
+	local container = obtenerContenedor(path, esCreate)
+
+	if not container or name == "" then
+		warn("[Roblox AI] Ruta invalida:", path, name)
+		return false
+	end
+
+	local existing = container:FindFirstChild(name)
+
+	if esCreate then
+		if existing then
+			warn("[Roblox AI] CREATE rechazado: ya existe", existing:GetFullName())
+			return false
+		end
+
+		if type(action.code) ~= "string" or action.code == "" then
+			warn("[Roblox AI] CREATE sin SOURCE completo:", path .. "/" .. name)
+			return false
+		end
+
+		local ok, created = pcall(function()
+			local instance = Instance.new(tipo)
+			instance.Name = name
+			instance.Parent = container
+			return instance
+		end)
+
+		if not ok or not created then
+			warn("[Roblox AI] No se pudo crear", tipo, created)
+			return false
+		end
+
+		if not actualizarSource(created, action.code) then
+			created:Destroy()
+			return false
+		end
+
+		if created:IsA("Script") or created:IsA("LocalScript") then
+			created.Enabled = true
+		end
+
+		print("[Roblox AI] ✅ CREADO:", created:GetFullName())
+		ChangeHistoryService:SetWaypoint("OmniRoute crear " .. name)
+		return true
+	end
+
+	if not existing or existing.ClassName ~= tipo then
+		warn("[Roblox AI] Objeto de script no encontrado:", path .. "/" .. name)
+		return false
+	end
+
+	if action.type:sub(1, 7) == "update_" then
+		if type(action.code) ~= "string" or action.code == "" then
+			warn("[Roblox AI] UPDATE sin SOURCE completo:", path .. "/" .. name)
+			return false
+		end
+
+		if not actualizarSource(existing, action.code) then
+			return false
+		end
+
+		if existing:IsA("Script") or existing:IsA("LocalScript") then
+			existing.Enabled = true
+		end
+
+		print("[Roblox AI] ✏ ACTUALIZADO:", existing:GetFullName())
+		ChangeHistoryService:SetWaypoint("OmniRoute actualizar " .. name)
+		return true
+	end
+
+	if esDelete then
+		local fullName = existing:GetFullName()
+		existing:Destroy()
+		print("[Roblox AI] 🗑 ELIMINADO:", fullName)
+		ChangeHistoryService:SetWaypoint("OmniRoute eliminar " .. name)
+		return true
+	end
+
+	return false
+end
+
+local function ejecutarRemoteAction(action)
+	local className = REMOTE_TYPES[action.type]
+	if not className then
+		return false
+	end
+
+	local path = tostring(action.path or "")
+	local name = tostring(action.name or "")
+	local container = obtenerContenedor(path, action.type:sub(1, 7) == "create_")
+	if not container or name == "" then
+		return false
+	end
+
+	local existing = container:FindFirstChild(name)
+
+	if action.type:sub(1, 7) == "create_" then
+		if existing then
+			return existing.ClassName == className
+		end
+
+		local ok, created = pcall(function()
+			local instance = Instance.new(className)
+			instance.Name = name
+			instance.Parent = container
+			return instance
+		end)
+
+		if not ok then
+			warn("[Roblox AI] No se pudo crear remote:", created)
+			return false
+		end
+
+		print("[Roblox AI] ✅ REMOTE CREADO:", created:GetFullName())
+		ChangeHistoryService:SetWaypoint("OmniRoute crear remote " .. name)
+		return true
+	end
+
+	if not existing or existing.ClassName ~= className then
+		return false
+	end
+
+	existing:Destroy()
+	print("[Roblox AI] 🗑 REMOTE ELIMINADO:", path .. "/" .. name)
+	ChangeHistoryService:SetWaypoint("OmniRoute eliminar remote " .. name)
 	return true
 end
 
-local function obtenerLogsDePrueba()
-	local historial = {}
+local function ejecutarCarpeta(action)
+	local path = tostring(action.path or "")
+	local name = tostring(action.name or "")
 
-	local ok, datos = pcall(function()
-		return LogService:GetLogHistory()
-	end)
-
-	if not ok or type(datos) ~= "table" then
-		return historial
+	if name == "" or string.find(name, "/", 1, true) or string.find(name, "\\", 1, true) then
+		return false
 	end
 
-	for i = math.max(1, #datos - 100), #datos do
-		local entrada = datos[i]
+	if action.type == "create_folder" then
+		local container = obtenerContenedor(path, true)
+		if not container then return false end
+		if container:FindFirstChild(name) then return true end
 
-		if type(entrada) == "table" then
-			table.insert(historial, {
-				message = tostring(entrada.message or ""),
-				messageType = tostring(entrada.messageType or ""),
-				timestamp = tonumber(entrada.timestamp) or 0,
-				context = entrada.context
-			})
-		end
+		local folder = Instance.new("Folder")
+		folder.Name = name
+		folder.Parent = container
+		print("[Roblox AI] ✅ CARPETA CREADA:", folder:GetFullName())
+		ChangeHistoryService:SetWaypoint("OmniRoute crear carpeta " .. name)
+		return true
 	end
 
-	return historial
+	if action.type == "delete_folder" then
+		local container = obtenerContenedor(path, false)
+		if not container then return false end
+
+		local folder = container:FindFirstChild(name)
+		if not folder or not folder:IsA("Folder") then return false end
+
+		folder:Destroy()
+		print("[Roblox AI] 🗑 CARPETA ELIMINADA:", path .. "/" .. name)
+		ChangeHistoryService:SetWaypoint("OmniRoute eliminar carpeta " .. name)
+		return true
+	end
+
+	return false
 end
 
-local function ejecutarStudioTest(action)
+local function ejecutarExtendedAction(action)
+	local tipo = string.lower(tostring(action.type or ""))
+
+	if tipo == "run_studio_test" then
+		return ejecutarStudioTest(action)
+	end
+
+	local path = tostring(action.path or "")
+	local name = tostring(action.name or "")
+
+	if tipo == "create_instance" then
+		local className = tostring(action.className or "")
+		if className == "" or name == "" then
+			return false
+		end
+
+		local container = obtenerContenedor(path, true)
+		if not container then return false end
+
+		local existing = container:FindFirstChild(name)
+		if existing then
+			if not claseCoincide(existing, className) then
+				warn("[Roblox AI] CREATE_INSTANCE rechazado: nombre ocupado por otra clase.")
+				return false
+			end
+			local total = aplicarPropiedades(existing, action.properties)
+			print("[Roblox AI] ℹ INSTANCIA YA EXISTE:", existing:GetFullName(), "propiedades:", total)
+			return true
+		end
+
+		local ok, created = pcall(function()
+			local instance = Instance.new(className)
+			instance.Name = name
+			instance.Parent = container
+			return instance
+		end)
+
+		if not ok or not created then
+			warn("[Roblox AI] No se pudo crear clase:", className, created)
+			return false
+		end
+
+		local total = aplicarPropiedades(created, action.properties)
+		print("[Roblox AI] ✅ INSTANCIA CREADA:", created:GetFullName(), "(" .. className .. ")", "propiedades:", total)
+		ChangeHistoryService:SetWaypoint("OmniRoute crear instancia " .. name)
+		return true
+	end
+
+	local object = obtenerInstancia(path, name)
+	if not object then
+		warn("[Roblox AI] Objeto no encontrado:", path .. "/" .. name)
+		return false
+	end
+
+	if not claseCoincide(object, action.className) then
+		warn("[Roblox AI] ClassName no coincide:", object:GetFullName(), object.ClassName, action.className)
+		return false
+	end
+
+	if tipo == "set_property" then
+		local ok = aplicarPropiedad(object, tostring(action.property or ""), action.value)
+		if ok then ChangeHistoryService:SetWaypoint("OmniRoute propiedad " .. name) end
+		return ok
+	end
+
+	if tipo == "set_properties" then
+		local total = aplicarPropiedades(object, action.properties)
+		if total > 0 then ChangeHistoryService:SetWaypoint("OmniRoute propiedades " .. name) end
+		return total > 0
+	end
+
+	if tipo == "rename_instance" then
+		local newName = tostring(action.newName or "")
+		if newName == "" or string.find(newName, "/", 1, true) or string.find(newName, "\\", 1, true) then
+			return false
+		end
+
+		local parent = object.Parent
+		if not parent or parent:FindFirstChild(newName) then
+			warn("[Roblox AI] RENOMBRAR rechazado: nombre ocupado.")
+			return false
+		end
+
+		local oldName = object:GetFullName()
+		object.Name = newName
+		print("[Roblox AI] ✏ RENOMBRADO:", oldName, "→", object:GetFullName())
+		ChangeHistoryService:SetWaypoint("OmniRoute renombrar " .. newName)
+		return true
+	end
+
+	if tipo == "move_instance" then
+		local targetPath = tostring(action.targetPath or "")
+		local destination = obtenerContenedor(targetPath, false)
+		if not destination then
+			warn("[Roblox AI] Destino no encontrado:", targetPath)
+			return false
+		end
+
+		if destination == object or object:IsDescendantOf(destination) then
+			warn("[Roblox AI] MOVE rechazado: destino invalido.")
+			return false
+		end
+
+		if destination:FindFirstChild(object.Name) then
+			warn("[Roblox AI] MOVE rechazado: nombre ocupado en destino.")
+			return false
+		end
+
+		local oldName = object:GetFullName()
+		object.Parent = destination
+		print("[Roblox AI] 📦 MOVIDO:", oldName, "→", object:GetFullName())
+		ChangeHistoryService:SetWaypoint("OmniRoute mover " .. object.Name)
+		return true
+	end
+
+	if tipo == "delete_instance" then
+		local fullName = object:GetFullName()
+		object:Destroy()
+		print("[Roblox AI] 🗑 INSTANCIA ELIMINADA:", fullName)
+		ChangeHistoryService:SetWaypoint("OmniRoute eliminar " .. name)
+		return true
+	end
+
+	warn("[Roblox AI] Accion extendida desconocida:", tipo)
+	return false
+end
+
+function ejecutarStudioTest(action)
 	if type(action) ~= "table" then
 		return false
 	end
@@ -740,387 +773,156 @@ local function ejecutarStudioTest(action)
 		return false
 	end
 
-	print("=================================")
-	print("[Roblox AI] 🧪 INICIANDO PRUEBA")
-	print("[Roblox AI] Test:", testId)
-	print("[Roblox AI] Servidor +", numPlayers, "cliente(s)")
-	print("[Roblox AI] Duración máxima:", duration, "segundos")
-	print("=================================")
+	if serverCode == "" and clientCode == "" then
+		warn("[Roblox AI] run_studio_test sin serverCode/clientCode")
+		return false
+	end
 
 	local token = string.gsub(testId, "[^%w_]", "_")
 	local folderName = "__RobloxAI_Test_" .. token
-	local serverName = folderName .. "_Server"
-	local clientName = folderName .. "_Client"
+	local folder = Instance.new("Folder")
+	folder.Name = folderName
+	folder.Parent = game:GetService("ReplicatedStorage")
 
-	local testFolder = Instance.new("Folder")
-	testFolder.Name = folderName
-	testFolder.Parent = game:GetService("ReplicatedStorage")
-
-	local reportEvent = Instance.new("RemoteEvent")
-	reportEvent.Name = "Report"
-	reportEvent.Parent = testFolder
+	local report = Instance.new("RemoteEvent")
+	report.Name = "Report"
+	report.Parent = folder
 
 	local serverScript = Instance.new("Script")
-	serverScript.Name = serverName
-
-	serverScript.Source = [[
-local Players = game:GetService("Players")
-local StudioTestService = game:GetService("StudioTestService")
-
-local folder = script.Parent
-local report = folder:WaitForChild("Report")
-
-local finished = false
-local serverFinished = false
-local reports = {}
-
-local function terminar(ok, mensaje)
-    if finished then
-        return
-    end
-
-    finished = true
-    StudioTestService:EndTest({
-        ok = ok,
-        message = mensaje,
-        reports = reports
-    })
-end
-
-report.OnServerEvent:Connect(function(player, ok, mensaje)
-    reports[player.UserId] = {
-        player = player.Name,
-        ok = ok == true,
-        message = tostring(mensaje or "")
-    }
-
-    print("[Roblox AI TEST][CLIENT]", player.Name, ok, mensaje)
-
-    local required = ]] .. tostring(numPlayers) .. [[
-    local total = 0
-
-    for _ in pairs(reports) do
-        total += 1
-    end
-
-    if serverFinished and total >= required then
-        local todosOk = true
-
-        for _, resultado in pairs(reports) do
-            if not resultado.ok then
-                todosOk = false
-                break
-            end
-        end
-
-        terminar(todosOk, todosOk and "Todos los clientes pasaron." or "Un cliente falló.")
-    end
-end)
-
-task.spawn(function()
-    local ok, errorMessage = pcall(function()
-]] .. serverCode .. [[
-    end)
-
-    serverFinished = true
-
-    if not ok then
-        warn("[Roblox AI TEST][SERVER ERROR]", errorMessage)
-        terminar(false, tostring(errorMessage))
-        return
-    end
-
-    print("[Roblox AI TEST][SERVER] Prueba del servidor completada.")
-
-    local total = 0
-
-    for _ in pairs(reports) do
-        total += 1
-    end
-
-    if total >= ]] .. tostring(numPlayers) .. [[ then
-        local todosOk = true
-
-        for _, resultado in pairs(reports) do
-            if not resultado.ok then
-                todosOk = false
-                break
-            end
-        end
-
-        terminar(todosOk, todosOk and "Servidor y clientes OK." or "Un cliente falló.")
-    end
-end)
-
-task.delay(]] .. tostring(duration) .. [[, function()
-    if not finished then
-        warn("[Roblox AI TEST] Timeout")
-        terminar(false, "Timeout de prueba.")
-    end
-end)
-]]
-
-	serverScript.Parent = testFolder
+	serverScript.Name = folderName .. "_Server"
+	serverScript.Source = serverCode
+	serverScript.Parent = folder
 
 	local clientScript = Instance.new("LocalScript")
-	clientScript.Name = clientName
-
-	clientScript.Source = [[
-local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-
-local player = Players.LocalPlayer
-local folder = ReplicatedStorage:WaitForChild("]] .. folderName .. [[")
-local report = folder:WaitForChild("Report")
-
-task.spawn(function()
-    local ok, errorMessage = pcall(function()
-]] .. clientCode .. [[
-    end)
-
-    if ok then
-        print("[Roblox AI TEST][CLIENT] PASS:", player.Name)
-        report:FireServer(true, "Cliente OK")
-    else
-        warn("[Roblox AI TEST][CLIENT ERROR]", errorMessage)
-        report:FireServer(false, tostring(errorMessage))
-    end
-end)
-]]
-
+	clientScript.Name = folderName .. "_Client"
+	clientScript.Source = clientCode
 	clientScript.Parent = game:GetService("StarterPlayer"):WaitForChild("StarterPlayerScripts")
 
 	local inicio = os.clock()
-
 	local okRun, result = pcall(function()
 		return StudioTestService:ExecuteMultiplayerTestAsync(numPlayers, duration)
 	end)
 
-	local duracionReal = os.clock() - inicio
-	local logs = obtenerLogsDePrueba()
+	local logs = {}
+	pcall(function()
+		for _, entry in ipairs(LogService:GetLogHistory()) do
+			table.insert(logs, {
+				message = tostring(entry.message or ""),
+				messageType = tostring(entry.messageType or ""),
+				timestamp = tonumber(entry.timestamp) or 0
+			})
+		end
+	end)
 
-	local errores = 0
-	local advertencias = 0
-
-	for _, entrada in ipairs(logs) do
-		local tipo = string.lower(tostring(entrada.messageType))
-
-		if string.find(tipo, "error", 1, true) then
-			errores += 1
-		elseif string.find(tipo, "warning", 1, true) then
-			advertencias += 1
+	local errors = 0
+	local warnings = 0
+	for _, entry in ipairs(logs) do
+		local kind = string.lower(entry.messageType)
+		if string.find(kind, "error", 1, true) then
+			errors += 1
+		elseif string.find(kind, "warning", 1, true) then
+			warnings += 1
 		end
 	end
 
-	local resultadoPrueba = {
+	local resultData = {
 		testId = testId,
-		ok = okRun and errores == 0,
+		ok = okRun and errors == 0,
 		executionOk = okRun,
 		result = result,
-		duration = duracionReal,
+		duration = os.clock() - inicio,
 		numPlayers = numPlayers,
-		errorCount = errores,
-		warningCount = advertencias,
+		errorCount = errors,
+		warningCount = warnings,
 		logs = logs
 	}
 
-	if okRun then
-		print("[Roblox AI] ✅ PRUEBA TERMINADA")
-	else
-		warn("[Roblox AI] ❌ PRUEBA FALLÓ:", result)
-	end
-
-	print("[Roblox AI] Errores:", errores, "Advertencias:", advertencias)
-
-	pcall(function()
-		testFolder:Destroy()
+	pcall(function() folder:Destroy() end)
+	pcall(function() clientScript:Destroy() end)
+	
+	local postOk, postResponse = pcall(function()
+		return HttpService:RequestAsync({
+			Url = TEST_RESULTS_URL,
+			Method = "POST",
+			Headers = {
+				["Content-Type"] = "application/json",
+				["Accept"] = "application/json"
+			},
+			Body = HttpService:JSONEncode(resultData)
+		})
 	end)
 
-	enviarResultadoPrueba(resultadoPrueba)
-
-	return resultadoPrueba.ok
-end
-local function ejecutarExtendedAction(action)
-	if type(action) ~= "table" then
-		return false
+	if not postOk or not postResponse.Success then
+		warn("[Roblox AI] No se pudo enviar resultado de test.")
 	end
 
-	local tipo = tostring(action.type or ""):lower()
-
-	if tipo == "run_studio_test" then
-		return ejecutarStudioTest(action)
-	end
-	local ruta = tostring(action.path or "")
-	local nombre = tostring(action.name or "")
-
-	if tipo == "create_instance" then
-		local className = tostring(action.className or "")
-		if not CLASES_CREABLES[className] then
-			warn("[Roblox AI] Clase no permitida para create_instance:", className)
-			return false
-		end
-
-		local contenedor = obtenerContenedor(ruta, true)
-		if not contenedor or nombre == "" then
-			return false
-		end
-
-		local existente = contenedor:FindFirstChild(nombre)
-		if existente then
-			if existente.ClassName == className then
-				aplicarPropiedades(existente, action.properties)
-				print("[Roblox AI] â„¹ï¸ Instancia ya existente:", existente:GetFullName())
-				return true
-			end
-			warn("[Roblox AI] CREATE_INSTANCE rechazado: ya existe otro objeto con ese nombre.")
-			return false
-		end
-
-		local okCrear, nuevo = pcall(function()
-			local instancia = Instance.new(className)
-			instancia.Name = nombre
-			instancia.Parent = contenedor
-			return instancia
-		end)
-
-		if not okCrear or not nuevo then
-			warn("[Roblox AI] No se pudo crear instancia:", className, nuevo)
-			return false
-		end
-
-		local propiedadesAplicadas = aplicarPropiedades(nuevo, action.properties)
-		print("[Roblox AI] âœ… INSTANCIA CREADA:", nuevo:GetFullName(), "(" .. className .. ")", "propiedades:", propiedadesAplicadas)
-		ChangeHistoryService:SetWaypoint("OmniRoute crear instancia " .. nombre)
-		return true
+	if resultData.ok then
+		print("[Roblox AI] ✅ TEST OK:", testId)
+	else
+		warn("[Roblox AI] ❌ TEST FALLÓ:", testId, tostring(result))
 	end
 
-	local objeto = obtenerInstancia(ruta, nombre)
-	if not objeto then
-		warn("[Roblox AI] Objeto no encontrado:", ruta .. "/" .. nombre)
-		return false
-	end
-
-	if not claseCoincide(objeto, action.className) then
-		warn(
-			"[Roblox AI] ClassName no coincide:",
-			objeto:GetFullName(),
-			"real=", objeto.ClassName,
-			"esperado=", tostring(action.className)
-		)
-		return false
-	end
-
-	if tipo == "set_property" then
-		local ok = aplicarPropiedad(objeto, tostring(action.property or ""), action.value)
-		if ok then ChangeHistoryService:SetWaypoint("OmniRoute propiedad " .. objeto.Name) end
-		return ok
-	end
-
-	if tipo == "set_properties" then
-		local total = aplicarPropiedades(objeto, action.properties)
-		if total > 0 then ChangeHistoryService:SetWaypoint("OmniRoute propiedades " .. objeto.Name) end
-		return total > 0
-	end
-
-	if tipo == "rename_instance" then
-		local nuevoNombre = tostring(action.newName or "")
-		if nuevoNombre == "" or string.find(nuevoNombre, "/", 1, true) or string.find(nuevoNombre, "\\", 1, true) then
-			return false
-		end
-
-		local padre = objeto.Parent
-		if not padre or padre:FindFirstChild(nuevoNombre) then
-			warn("[Roblox AI] RENOMBRAR rechazado: nombre ocupado o sin padre.")
-			return false
-		end
-
-		local anterior = objeto:GetFullName()
-		objeto.Name = nuevoNombre
-		print("[Roblox AI] âœï¸ RENOMBRADO:", anterior, "â†’", objeto:GetFullName())
-		ChangeHistoryService:SetWaypoint("OmniRoute renombrar " .. nuevoNombre)
-		return true
-	end
-
-	if tipo == "move_instance" then
-		local targetPath = tostring(action.targetPath or "")
-		local destino = obtenerContenedor(targetPath, false)
-		if not destino then
-			warn("[Roblox AI] Destino no encontrado:", targetPath)
-			return false
-		end
-
-		if destino == objeto or objeto:IsDescendantOf(destino) then
-			warn("[Roblox AI] MOVE rechazado: destino dentro del propio objeto.")
-			return false
-		end
-
-		if destino:FindFirstChild(objeto.Name) then
-			warn("[Roblox AI] MOVE rechazado: ya existe el mismo nombre en destino.")
-			return false
-		end
-
-		local anterior = objeto:GetFullName()
-		objeto.Parent = destino
-		print("[Roblox AI] ðŸ“¦ MOVIDO:", anterior, "â†’", objeto:GetFullName())
-		ChangeHistoryService:SetWaypoint("OmniRoute mover " .. objeto.Name)
-		return true
-	end
-
-	if tipo == "delete_instance" then
-		local fullName = objeto:GetFullName()
-		objeto:Destroy()
-		print("[Roblox AI] ðŸ—‘ï¸ INSTANCIA ELIMINADA:", fullName)
-		ChangeHistoryService:SetWaypoint("OmniRoute eliminar " .. nombre)
-		return true
-	end
-
-	warn("[Roblox AI] AcciÃ³n extendida desconocida:", tipo)
-	return false
+	return resultData.ok
 end
 
-local function intentarAccionExtendidaEmpaquetada(action)
-	if type(action) ~= "table" or action.type ~= "update_script" or type(action.code) ~= "string" then
+local function intentarAccionEmpaquetada(action)
+	if type(action) ~= "table" or type(action.code) ~= "string" then
 		return false
 	end
 
-	if string.sub(action.code, 1, #EXTENDED_MARKER) ~= EXTENDED_MARKER then
+	local marker = "__ROBLOX_AI_EXTENDED_ACTION__"
+	if action.type ~= "update_script" or action.code:sub(1, #marker) ~= marker then
 		return false
 	end
 
-	local json = string.sub(action.code, #EXTENDED_MARKER + 2)
+	local json = action.code:sub(#marker + 1):gsub("^%s+", "")
 	local ok, extended = pcall(function()
 		return HttpService:JSONDecode(json)
 	end)
 
-	if not ok or type(extended) ~= "table" then
-		warn("[Roblox AI] AcciÃ³n extendida empaquetada invÃ¡lida.")
-		return true
+	if ok and type(extended) == "table" then
+		ejecutarExtendedAction(extended)
 	end
 
-	ejecutarExtendedAction(extended)
 	return true
 end
 
 local function ejecutarAccion(action)
 	if type(action) ~= "table" then
-		return
+		return false
 	end
 
-	if intentarAccionExtendidaEmpaquetada(action) then
-		return
+	if intentarAccionEmpaquetada(action) then
+		return true
 	end
 
-	local tipo = tostring(action.type or "")
+	local tipo = string.lower(tostring(action.type or action.action or ""))
+	action.type = tipo
 
-	if TIPOS_SCRIPT[tipo] then
-		ejecutarScriptAction(action)
-	elseif TIPOS_REMOTOS[tipo] then
-		ejecutarRemoteAction(action)
-	elseif tipo == "create_folder" or tipo == "delete_folder" then
-		ejecutarCarpeta(action)
-	else
-		warn("[Roblox AI] AcciÃ³n desconocida:", tipo)
+	if SCRIPT_TYPES[tipo] then
+		return ejecutarScriptAction(action)
 	end
+
+	if REMOTE_TYPES[tipo] then
+		return ejecutarRemoteAction(action)
+	end
+
+	if tipo == "create_folder" or tipo == "delete_folder" then
+		return ejecutarCarpeta(action)
+	end
+
+	if tipo == "create_instance"
+		or tipo == "delete_instance"
+		or tipo == "set_property"
+		or tipo == "set_properties"
+		or tipo == "rename_instance"
+		or tipo == "move_instance"
+		or tipo == "run_studio_test" then
+		return ejecutarExtendedAction(action)
+	end
+
+	warn("[Roblox AI] Accion desconocida:", tipo)
+	return false
 end
 
 local function consultarServidor()
@@ -1130,7 +932,7 @@ local function consultarServidor()
 
 	consultando = true
 
-	local ok, respuesta = pcall(function()
+	local ok, response = pcall(function()
 		return HttpService:RequestAsync({
 			Url = NEXT_URL,
 			Method = "GET"
@@ -1139,37 +941,49 @@ local function consultarServidor()
 
 	consultando = false
 
-	if not ok or not respuesta.Success then
+	if not ok or not response.Success then
 		return
 	end
 
-	local jsonOk, datos = pcall(function()
-		return HttpService:JSONDecode(respuesta.Body)
+	local jsonOk, data = pcall(function()
+		return HttpService:JSONDecode(response.Body)
 	end)
 
-	if not jsonOk or type(datos) ~= "table" or type(datos.actions) ~= "table" then
+	if not jsonOk or type(data) ~= "table" or type(data.actions) ~= "table" then
 		return
 	end
 
-	if #datos.actions == 0 then
+	if #data.actions == 0 then
 		return
 	end
 
-	print("[Roblox AI] ðŸ“¥ Acciones Groq:", #datos.actions)
+	print("[Roblox AI] 📥 Acciones OmniRoute:", #data.actions)
 	ChangeHistoryService:SetWaypoint("Antes de cambios OmniRoute")
 
-	for _, action in ipairs(datos.actions) do
-		local okAction, errorAction = pcall(function()
-			ejecutarAccion(action)
+	local exitosas = 0
+	local fallidas = 0
+
+	for _, action in ipairs(data.actions) do
+		local okAction, resultado = pcall(function()
+			return ejecutarAccion(action)
 		end)
 
-		if not okAction then
-			warn("[Roblox AI] Error ejecutando acciÃ³n:", errorAction)
+		if okAction and resultado then
+			exitosas += 1
+		else
+			fallidas += 1
+			if not okAction then
+				warn("[Roblox AI] Error ejecutando accion:", resultado)
+			end
 		end
 	end
 
+	print("[Roblox AI] Resultado acciones: " .. exitosas .. " exitosas | " .. fallidas .. " fallidas")
 	ChangeHistoryService:SetWaypoint("Cambios OmniRoute completados")
-	escanearProyecto()
+
+	if exitosas > 0 then
+		escanearProyecto()
+	end
 end
 
 local function iniciarLoops()
@@ -1194,7 +1008,7 @@ button.Click:Connect(function()
 	if conectado then
 		conectado = false
 		button:SetActive(false)
-		print("[Roblox AI] ðŸ”Œ DESCONECTADO")
+		print("[Roblox AI] 🔌 DESCONECTADO")
 		return
 	end
 
@@ -1206,10 +1020,9 @@ button.Click:Connect(function()
 	button:SetActive(true)
 
 	print("=================================")
-	print("[Roblox AI] ðŸŸ¢ CONECTADO")
+	print("[Roblox AI] 🟢 CONECTADO")
 	print("[Roblox AI] Proveedor: OmniRoute")
-	print("[Roblox AI] Modelo: auto")
-	print("[Roblox AI] Funciones: scripts + remotes + instancias + propiedades")
+	print("[Roblox AI] Acciones: crear, eliminar, modificar, propiedades, mover, renombrar, pruebas")
 	print("[Roblox AI] Escaneo: al conectar + cada 5 minutos")
 	print("=================================")
 
