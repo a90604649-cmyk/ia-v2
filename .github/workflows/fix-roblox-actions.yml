@@ -1,0 +1,157 @@
+name: Fix Roblox AI actions
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: "!contains(github.event.head_commit.message, 'Apply generic Roblox action support')"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Patch plugin and Project Context
+        shell: python
+        run: |
+          from pathlib import Path
+
+          plugin_path = Path('ia/RobloxAIBridgePlugin.lua')
+          text = plugin_path.read_text(encoding='utf-8-sig')
+
+          old = '''local CLASES_CREABLES = {
+\tFolder = true,
+\tModel = true,
+\tPart = true,
+\tMeshPart = true,
+\tTool = true,
+\tRemoteEvent = true,
+\tRemoteFunction = true,
+\tBindableEvent = true,
+\tBindableFunction = true,
+\tAttachment = true,
+\tMotor6D = true,
+\tWeldConstraint = true,
+\tProximityPrompt = true,
+\tScreenGui = true,
+\tFrame = true,
+\tTextLabel = true,
+\tTextButton = true,
+\tTextBox = true,
+\tImageLabel = true,
+\tImageButton = true
+}
+
+'''
+          if old not in text:
+              raise SystemExit('CLASES_CREABLES block not found')
+          text = text.replace(old, '', 1)
+
+          old = '''\t\t\tif not debeIgnorar(objeto) and CLASES_OBJETOS[objeto.ClassName] then
+\t\t\t\tlocal ruta = obtenerRuta(objeto)
+\t\t\t\tif ruta then
+\t\t\t\t\ttable.insert(resultado, {
+\t\t\t\t\t\tclassName = objeto.ClassName,
+\t\t\t\t\t\tname = objeto.Name,
+\t\t\t\t\t\tpath = ruta
+\t\t\t\t\t})
+\t\t\t\tend
+\t\t\tend'''
+          new = '''\t\t\tif not debeIgnorar(objeto) then
+\t\t\t\tlocal ruta = obtenerRuta(objeto)
+\t\t\t\tif ruta then
+\t\t\t\t\ttable.insert(resultado, {
+\t\t\t\t\t\tclassName = objeto.ClassName,
+\t\t\t\t\t\tname = objeto.Name,
+\t\t\t\t\t\tpath = ruta
+\t\t\t\t\t})
+\t\t\t\tend
+\t\t\tend'''
+          if old not in text:
+              raise SystemExit('object scan filter block not found')
+          text = text.replace(old, new, 1)
+
+          old = '''\tif tipo == "create_instance" then
+\t\tlocal className = tostring(action.className or "")
+\t\tif not CLASES_CREABLES[className] then
+\t\t\twarn("[Roblox AI] Clase no permitida para create_instance:", className)
+\t\t\treturn false
+\t\tend
+
+\t\tlocal contenedor = obtenerContenedor(ruta, true)'''
+          new = '''\tif tipo == "create_instance" then
+\t\tlocal className = tostring(action.className or "")
+\t\tif className == "" then
+\t\t\twarn("[Roblox AI] create_instance sin className.")
+\t\t\treturn false
+\t\tend
+
+\t\tlocal contenedor = obtenerContenedor(ruta, true)'''
+          if old not in text:
+              raise SystemExit('create_instance whitelist block not found')
+          text = text.replace(old, new, 1)
+
+          old = '''\t\tlocal okCrear, nuevo = pcall(function()
+\t\t\tlocal instancia = Instance.new(className)
+\t\t\tinstancia.Name = nombre
+\t\t\tinstancia.Parent = contenedor
+\t\t\treturn instancia
+\t\tend)
+
+\t\tif not okCrear or not nuevo then'''
+          new = '''\t\tlocal okCrear, nuevo = pcall(function()
+\t\t\tlocal instancia = Instance.new(className)
+\t\t\tinstancia.Name = nombre
+\t\t\tinstancia.Parent = contenedor
+\t\t\treturn instancia
+\t\tend)
+
+\t\tif not okCrear or not nuevo then'''
+          if old not in text:
+              raise SystemExit('create_instance constructor block not found')
+          text = text.replace(old, new, 1)
+
+          old = '''\tif TIPOS_SCRIPT[tipo] then
+\t\tejecutarScriptAction(action)
+\telseif TIPOS_REMOTOS[tipo] then
+\t\tejecutarRemoteAction(action)
+\telseif tipo == "create_folder" or tipo == "delete_folder" then
+\t\tejecutarCarpeta(action)
+\telse
+\t\twarn("[Roblox AI] AcciÃ³n desconocida:", tipo)
+\tend'''
+          new = '''\tif TIPOS_SCRIPT[tipo] then
+\t\tejecutarScriptAction(action)
+\telseif TIPOS_REMOTOS[tipo] then
+\t\tejecutarRemoteAction(action)
+\telseif tipo == "create_folder" or tipo == "delete_folder" then
+\t\tejecutarCarpeta(action)
+\telseif tipo == "create_instance"
+\t\tor tipo == "delete_instance"
+\t\tor tipo == "set_property"
+\t\tor tipo == "set_properties"
+\t\tor tipo == "rename_instance"
+\t\tor tipo == "move_instance"
+\t\tor tipo == "run_studio_test" then
+\t\tejecutarExtendedAction(action)
+\telse
+\t\twarn("[Roblox AI] AcciÃ³n desconocida:", tipo)
+\tend'''
+          if old not in text:
+              raise SystemExit('action dispatcher block not found')
+          text = text.replace(old, new, 1)
+
+          plugin_path.write_text(text, encoding='utf-8')
+
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f .github/workflows/fix-roblox-actions.yml
+          git add ia/RobloxAIBridgePlugin.lua ia/projectContextServer.js .github/workflows/fix-roblox-actions.yml
+          git commit -m "Apply generic Roblox action support"
+          git push
