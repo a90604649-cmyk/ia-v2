@@ -1,0 +1,232 @@
+name: Apply real Studio test changes
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch Studio test support
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          omni = Path('ia/omniRoute.js')
+          text = omni.read_text(encoding='utf-8-sig')
+
+          pattern = r'function normalizarRunStudioTest\(action\) \{.*?\n\}\n\nfunction empaquetarAccionExtendida'
+          replacement = '''function normalizarRunStudioTest(action) {
+    const numPlayers = Math.max(
+        1,
+        Math.min(
+            8,
+            Number(action.numPlayers || action.players || 2)
+        )
+    );
+
+    const duration = Math.max(
+        3,
+        Math.min(
+            60,
+            Number(action.duration || 10)
+        )
+    );
+
+    const modeValue = String(
+        action.mode || "play"
+    ).trim().toLowerCase();
+
+    const mode = [
+        "play",
+        "run",
+        "multiplayer"
+    ].includes(modeValue)
+        ? modeValue
+        : "play";
+
+    return {
+        type: "run_studio_test",
+        testId: String(
+            action.testId || crearTestId()
+        ),
+        mode,
+        numPlayers,
+        duration,
+        description: String(
+            action.description ||
+            "Prueba real del proyecto en Roblox Studio."
+        ).trim()
+    };
+}
+
+function empaquetarAccionExtendida'''
+
+          new_text, count = re.subn(pattern, replacement, text, count=1, flags=re.S)
+          if count != 1:
+              raise SystemExit('No se encontro normalizarRunStudioTest en omniRoute.js')
+          omni.write_text(new_text, encoding='utf-8')
+
+          plugin = Path('ia/RobloxAIBridgePlugin.lua')
+          text = plugin.read_text(encoding='utf-8')
+
+          pattern = r'local function ejecutarStudioTest\(action\).*?\nend\n\nlocal function ejecutarExtendedAction'
+          replacement = '''local function ejecutarStudioTest(action)
+\tlocal testId = tostring(action.testId or ("test_" .. tostring(os.time())))
+\tlocal mode = string.lower(tostring(action.mode or "play"))
+\tlocal duration = math.clamp(tonumber(action.duration) or 10, 3, 60)
+\tlocal description = tostring(action.description or "Prueba real del proyecto en Roblox Studio.")
+\n\tlocal okClear, clearErr = pcall(function()
+\t\tLogService:ClearOutput()
+\tend)
+\n\tif not okClear then
+\t\twarn("[Roblox AI] No se pudo limpiar Output:", clearErr)
+\tend
+\n\tlocal terminado = false
+\tlocal resultadoEjecucion = nil
+\tlocal errorEjecucion = nil
+\n\ttask.spawn(function()
+\t\tlocal ok, result = pcall(function()
+\t\t\tif mode == "run" then
+\t\t\t\treturn StudioTestService:ExecuteRunModeAsync(description)
+\t\t\telseif mode == "multiplayer" then
+\t\t\t\tlocal players = math.clamp(tonumber(action.numPlayers) or 2, 1, 8)
+\t\t\t\treturn StudioTestService:ExecuteMultiplayerTestAsync(players, description)
+\t\t\tend
+\n\t\t\treturn StudioTestService:ExecutePlayModeAsync(description)
+\t\tend)
+\n\t\tresultadoEjecucion = result
+\t\tif not ok then
+\t\t\terrorEjecucion = tostring(result)
+\t\tend
+\t\tterminado = true
+\tend)
+\n\tlocal inicio = os.clock()
+\twhile not terminado and os.clock() - inicio < duration do
+\t\ttask.wait(0.1)
+\tend
+\n\tif not terminado then
+\t\tlocal puedeSalir = pcall(function()
+\t\t\treturn StudioTestService:CanLeaveTest()
+\t\tend)
+\n\t\tif puedeSalir then
+\t\t\tpcall(function()
+\t\t\t\tif StudioTestService:CanLeaveTest() then
+\t\t\t\t\tStudioTestService:LeaveTest()
+\t\t\t\tend
+\t\t\tend)
+\t\tend
+\n\t\tlocal limite = os.clock() + 5
+\t\twhile not terminado and os.clock() < limite do
+\t\t\ttask.wait(0.1)
+\t\tend
+\tend
+\n\ttask.wait(0.25)
+\n\tlocal logs = {}
+\tlocal errors = {}
+\tlocal warnings = {}
+\tlocal output = {}
+\n\tlocal okHistory, history = pcall(function()
+\t\treturn LogService:GetLogHistory()
+\tend)
+\n\tif okHistory and type(history) == "table" then
+\t\tfor _, entry in ipairs(history) do
+\t\t\tlocal message = tostring(entry.message or "")
+\t\t\tlocal messageType = entry.messageType
+\t\t\tlocal tipo = tostring(messageType)
+\t\t\tlocal item = {
+\t\t\t\tmessage = message,
+\t\t\t\ttype = tipo,
+\t\t\t\ttimestamp = tonumber(entry.timestamp) or 0
+\t\t\t}
+\n\t\t\ttable.insert(logs, item)
+\n\t\t\tif messageType == Enum.MessageType.MessageError or string.find(tipo, "MessageError", 1, true) then
+\t\t\t\ttable.insert(errors, item)
+\t\t\telseif messageType == Enum.MessageType.MessageWarning or string.find(tipo, "MessageWarning", 1, true) then
+\t\t\t\ttable.insert(warnings, item)
+\t\t\telse
+\t\t\t\ttable.insert(output, item)
+\t\t\tend
+\t\tend
+\tend
+\n\tif errorEjecucion then
+\t\ttable.insert(errors, {
+\t\t\tmessage = errorEjecucion,
+\t\t\ttype = "ExecutionError",
+\t\t\ttimestamp = os.clock()
+\t\t})
+\tend
+\n\tlocal resultado = {
+\t\ttestId = testId,
+\t\tok = #errors == 0 and errorEjecucion == nil,
+\t\tmode = mode,
+\t\tduration = duration,
+\t\tdescription = description,
+\t\tresult = resultadoEjecucion,
+\t\terrors = errors,
+\t\twarnings = warnings,
+\t\toutput = output,
+\t\tlogs = logs,
+\t\terrorCount = #errors,
+\t\twarningCount = #warnings
+\t}
+\n\tlocal postOk, postResponse = pcall(function()
+\t\treturn HttpService:RequestAsync({
+\t\t\tUrl = TEST_RESULTS_URL,
+\t\t\tMethod = "POST",
+\t\t\tHeaders = {
+\t\t\t\t["Content-Type"] = "application/json",
+\t\t\t\t["Accept"] = "application/json"
+\t\t\t},
+\t\t\tBody = HttpService:JSONEncode(resultado)
+\t\t})
+\tend)
+\n\tif not postOk or not postResponse.Success then
+\t\twarn("[Roblox AI] No se pudo enviar resultado de prueba:", postOk and postResponse.Body or postResponse)
+\tend
+\n\tprint("[Roblox AI] 🧪 Prueba real finalizada:", testId, "errores:", #errors, "warnings:", #warnings)
+\treturn true
+end
+
+local function ejecutarExtendedAction'''
+
+          new_text, count = re.subn(pattern, replacement, text, count=1, flags=re.S)
+          if count != 1:
+              raise SystemExit('No se encontro ejecutarStudioTest en RobloxAIBridgePlugin.lua')
+          plugin.write_text(new_text, encoding='utf-8')
+
+          print('Patched omniRoute.js and RobloxAIBridgePlugin.lua')
+
+      - name: Commit patched files
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ia/omniRoute.js ia/RobloxAIBridgePlugin.lua
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Enable real Roblox Studio playtest analysis"
+            git push
+          fi
+
+      - name: Remove patch workflow
+        if: always()
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ -f .github/workflows/patch-studio-test.yml ]; then
+            git rm .github/workflows/patch-studio-test.yml
+            git commit -m "Remove temporary patch workflow"
+            git push || true
+          fi
