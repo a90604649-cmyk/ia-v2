@@ -37,6 +37,7 @@ const testResults = new Map();
 const activeTestJobs = new Map();
 
 const MAX_TEST_CYCLES = 3;
+const MAX_VFX_ACTIONS = 120;
 
 const SCRIPT_CLASSES = new Set([
     "Script",
@@ -1928,11 +1929,19 @@ function esAccionPermitidaVFX(action, mensajeUsuario = "") {
         return false;
     }
 
+    const actionType = String(payload.type || "");
+    const className = String(payload.className || "");
+    const forbiddenClasses = new Set(["Script", "LocalScript", "ModuleScript", "RemoteEvent", "RemoteFunction"]);
+    if (forbiddenClasses.has(className)) return false;
+
+    const visualClasses = new Set(["Folder", "Model", "Part", "MeshPart", "WedgePart", "CornerWedgePart", "Attachment", "ParticleEmitter", "Beam", "Trail", "PointLight", "SpotLight", "SurfaceLight", "Highlight", "Texture", "Decal", "SpecialMesh", "BlockMesh", "CylinderMesh", "Fire", "Smoke", "Sparkles", "BillboardGui", "SurfaceGui", "Frame", "ImageLabel", "ImageButton", "UIGradient", "UICorner", "PointLight"]);
+    if (actionType === "create_instance" && !visualClasses.has(className)) return false;
+
     const allowed = new Set(["create_instance", "set_property", "set_properties", "rename_instance", "move_instance"]);
-    if (allowed.has(String(payload.type || ""))) return true;
+    if (allowed.has(actionType)) return true;
 
     const explicitlyRequestsDeletion = /elimina|eliminar|borra|borrar|quita|quitar|remove|delete/i.test(String(mensajeUsuario));
-    return payload.type === "delete_instance" && explicitlyRequestsDeletion;
+    return actionType === "delete_instance" && explicitlyRequestsDeletion;
 }
 function extraerResultado(
     texto,
@@ -1964,14 +1973,13 @@ function extraerResultado(
     }
 
     const actions = [];
+    const rawActions = Array.isArray(parsed.actions) ? parsed.actions : [];
+    if (rawActions.length > MAX_VFX_ACTIONS) {
+        console.warn(`[RobloxAI] Se limitaron las acciones VFX a ${MAX_VFX_ACTIONS} para evitar cambios excesivos en Studio.`);
+    }
 
     for (
-        const raw of
-            Array.isArray(
-                parsed.actions
-            )
-                ? parsed.actions
-                : []
+        const raw of rawActions.slice(0, MAX_VFX_ACTIONS)
     ) {
         const action =
             normalizarAccion(
