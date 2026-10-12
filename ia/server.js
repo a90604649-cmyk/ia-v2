@@ -2184,15 +2184,6 @@ async function pedirRespuestaEjecutable(
                 "hidden",
             temperature:
                 0.1,
-            maxCompletionTokens:
-                Math.min(
-                    12000,
-                    Number(
-                        process.env
-                            .OMNIROUTE_MAX_OUTPUT_TOKENS ||
-                        12000
-                    )
-                ),
             timeoutMs:
                 Number(
                     process.env
@@ -2320,15 +2311,6 @@ async function pedirCorreccion(
                     "hidden",
                 temperature:
                     0.05,
-                maxCompletionTokens:
-                    Math.min(
-                        12000,
-                        Number(
-                            process.env
-                                .OMNIROUTE_MAX_OUTPUT_TOKENS ||
-                            12000
-                        )
-                    ),
                 timeoutMs:
                     Number(
                         process.env
@@ -2709,15 +2691,6 @@ async function responderChat(
                     temperature:
                         0.5,
 
-                    maxCompletionTokens:
-                        Math.min(
-                            700,
-                            Number(
-                                process.env
-                                    .OMNIROUTE_MAX_OUTPUT_TOKENS ||
-                                700
-                            )
-                        ),
 
                     attemptsPerKey:
                         1
@@ -2828,7 +2801,6 @@ async function evaluarCapturaVFX(report) {
                 reasoningEffort: "none",
                 reasoningFormat: "hidden",
                 temperature: 0.1,
-                maxCompletionTokens: 6000,
                 timeoutMs: Math.min(Number(process.env.OMNIROUTE_TIMEOUT_MS || 120000), 120000),
                 attemptsPerKey: 1
             }
