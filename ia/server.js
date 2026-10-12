@@ -28,6 +28,9 @@ const PROJECT_CONTEXT_PORT = Number(
 
 let pendingActions = [];
 let lastExecutionReport = null;
+let lastVisualCapture = null;
+let visualReviewCycles = 0;
+const MAX_VISUAL_REVIEW_CYCLES = 2;
 
 let contextoScriptSeleccionado = null;
 let contextoProyectoActual = null;
@@ -2358,6 +2361,8 @@ async function procesarVFX(
     mensajeUsuario,
     soloAnalisis = false
 ) {
+    visualReviewCycles = 0;
+    lastVisualCapture = null;
     // El refinamiento de VFX puede requerir añadir capas; no aplicar restricciones de reparación de sistemas de código.
     const reparacion = false;
 
@@ -2789,6 +2794,82 @@ app.get(
     }
 );
 
+async function evaluarCapturaVFX(report) {
+    if (!lastVisualCapture || visualReviewCycles >= MAX_VISUAL_REVIEW_CYCLES) return;
+    if (Date.now() - lastVisualCapture.receivedAt > 90000) return;
+
+    visualReviewCycles += 1;
+    const capture = lastVisualCapture;
+    const prompt = [
+        "REVISIÓN VISUAL DEL EFECTO EN ROBLOX STUDIO.",
+        "La imagen adjunta es una captura real del viewport actual.",
+        "Evalúa solo lo que realmente se ve: silueta, composición, capas, contraste, escala, profundidad, legibilidad y objetos fuera de lugar.",
+        "Si el efecto ya se ve coherente, devuelve actions: [].",
+        "Si necesita mejoras, aplica cambios pequeños y concretos con acciones de instancias/propiedades; no crees scripts, remotes ni pruebas de juego.",
+        "No borres objetos. No inventes detalles que no aparezcan en la captura.",
+        `Resultado estructural reportado por Studio: ${report.successful} acciones correctas y ${report.failed} fallidas.`,
+        "Devuelve JSON válido con reply y actions."
+    ].join("\n");
+
+    try {
+        const texto = await preguntarOmniRoute(
+            [
+                { role: "system", content: VFX_SYSTEM },
+                {
+                    role: "user",
+                    content: [
+                        { type: "text", text: prompt },
+                        { type: "image_url", image_url: { url: capture.dataUrl } }
+                    ]
+                }
+            ],
+            {
+                json: true,
+                reasoningEffort: "none",
+                reasoningFormat: "hidden",
+                temperature: 0.1,
+                maxCompletionTokens: 6000,
+                timeoutMs: Math.min(Number(process.env.OMNIROUTE_TIMEOUT_MS || 120000), 120000),
+                attemptsPerKey: 1
+            }
+        );
+
+        const result = extraerResultado(texto, {
+            repairMode: false,
+            soloAnalisis: false,
+            mensajeUsuario: "Revisión visual automática del VFX; no borrar objetos."
+        });
+
+        if (!result || result.actions.length === 0) {
+            console.log("[RobloxAI] Revisión visual completada: no se solicitaron más cambios.");
+            return;
+        }
+
+        pendingActions = result.actions;
+        console.log(`[RobloxAI] Revisión visual ${visualReviewCycles}/${MAX_VISUAL_REVIEW_CYCLES}: ${pendingActions.length} ajuste(s) listos para Studio.`);
+        console.log(result.reply || "Ajustes visuales preparados.");
+    } catch (error) {
+        console.warn("[RobloxAI] No se pudo evaluar la captura con el modelo configurado. Puede que el modelo seleccionado no admita imágenes:", error instanceof Error ? error.message : String(error));
+    }
+}
+
+app.post(
+    "/visual-capture",
+    (req, res) => {
+        const data = req.body || {};
+        const imageBase64 = String(data.imageBase64 || "");
+        if (!imageBase64 || imageBase64.length > 6000000 || !/^[A-Za-z0-9+/=]+$/.test(imageBase64)) {
+            return res.status(400).json({ ok: false, error: "Captura PNG vacía, demasiado grande o inválida." });
+        }
+        lastVisualCapture = {
+            dataUrl: `data:image/png;base64,${imageBase64}`,
+            receivedAt: Date.now(),
+            resolution: data.resolution || null
+        };
+        console.log("[RobloxAI] Captura visual recibida desde Studio.");
+        return res.json({ ok: true });
+    }
+);
 app.post(
     "/execution-results",
     (req, res) => {
@@ -2803,6 +2884,9 @@ app.post(
         };
         console.log(`[RobloxAI] Resultado Studio: ${lastExecutionReport.successful} correctas | ${lastExecutionReport.failed} fallidas.`);
         res.json({ ok: true });
+        if (lastExecutionReport.successful > 0 && lastVisualCapture) {
+            void evaluarCapturaVFX(lastExecutionReport);
+        }
     }
 );
 
