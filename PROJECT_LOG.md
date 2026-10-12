@@ -16,7 +16,7 @@ Transform the existing Roblox AI Bridge into an AI-assisted VFX authoring tool f
 - `ia-v2/ia/omniRoute.js` routes model requests through a local OpenAI-compatible endpoint configured by environment variables.
 - `ia-v2/ia/RobloxAIBridgePlugin.lua` can inspect project objects and apply supported instance/property actions in Studio edit mode.
 - The plugin's current allowed-property handling and action schema need review before complex VFX properties can be set reliably.
-- No implementation was found in the reviewed plugin for visual screenshot capture; this remains unverified across the whole project.
+- The server now has an in-memory `/visual-capture` endpoint and a bounded image-review/correction routine, but the plugin-side capture-and-upload call is not connected yet. Therefore the visual loop is not end-to-end usable.
 - The current bridge is a useful starting point, not yet a VFX authoring/evaluation system.
 
 ## First milestone
@@ -51,6 +51,7 @@ Create a single blue energy-orb effect directly in Studio edit mode, with an org
 - Added VFX-specific OmniRoute enrichment so the model receives instance-action rules and real project-object context.
 - Added a server-side allowlist that rejects script/remotes/game-test actions and accepts only visual instance/property actions; deletion is accepted only when the user explicitly asks to remove something.
 - Added plugin-to-server action-result reporting so the server can record successful and failed Studio operations instead of assuming that queued actions succeeded.
+- Added a server-side visual capture receiver and a maximum of two image-review correction rounds; this remains dormant until the Studio plugin capture path is implemented and tested.
 - Fixed the packed-action handler so it returns the real result of the extended action rather than reporting success merely because the marker was recognized.
 - Changed the request mode and health capability list to describe direct VFX authoring rather than general coding.
 - Added VFX-specific OmniRoute enrichment so the model receives instance-action rules and real project-object context.
