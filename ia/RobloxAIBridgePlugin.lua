@@ -375,7 +375,11 @@ local function convertirValor(valor)
 	elseif tipo == "Vector3" then
 		return Vector3.new(tonumber(valor.x) or 0, tonumber(valor.y) or 0, tonumber(valor.z) or 0)
 	elseif tipo == "Color3" then
-		return Color3.new(tonumber(valor.r) or 0, tonumber(valor.g) or 0, tonumber(valor.b) or 0)
+		return Color3.new(
+			math.clamp(tonumber(valor.r) or 0, 0, 1),
+			math.clamp(tonumber(valor.g) or 0, 0, 1),
+			math.clamp(tonumber(valor.b) or 0, 0, 1)
+		)
 	elseif tipo == "CFrame" then
 		return CFrame.new(
 			tonumber(valor.x) or 0,
@@ -395,11 +399,60 @@ local function convertirValor(valor)
 		)
 	elseif tipo == "BrickColor" then
 		return BrickColor.new(tostring(valor.value or "Medium stone grey"))
+	elseif tipo == "NumberRange" then
+		local minimum = tonumber(valor.min) or tonumber(valor.minimum) or 0
+		local maximum = tonumber(valor.max) or tonumber(valor.maximum) or minimum
+		return NumberRange.new(math.min(minimum, maximum), math.max(minimum, maximum))
+	elseif tipo == "NumberSequence" then
+		if type(valor.keypoints) ~= "table" or #valor.keypoints < 2 then
+			error("NumberSequence requiere al menos 2 keypoints.")
+		end
+
+		local keypoints = {}
+		local previousTime = -1
+		for _, point in ipairs(valor.keypoints) do
+			local time = tonumber(point.time)
+			local value = tonumber(point.value)
+			local envelope = tonumber(point.envelope) or 0
+			if not time or not value or time < 0 or time > 1 or time < previousTime then
+				error("Keypoints de NumberSequence inválidos o desordenados.")
+			end
+			table.insert(keypoints, NumberSequenceKeypoint.new(time, value, math.max(0, envelope)))
+			previousTime = time
+		end
+		return NumberSequence.new(keypoints)
+	elseif tipo == "ColorSequence" then
+		if type(valor.keypoints) ~= "table" or #valor.keypoints < 2 then
+			error("ColorSequence requiere al menos 2 keypoints.")
+		end
+
+		local keypoints = {}
+		local previousTime = -1
+		for _, point in ipairs(valor.keypoints) do
+			local time = tonumber(point.time)
+			local colorData = point.color or point
+			local color = convertirValor({
+				type = "Color3",
+				r = colorData.r,
+				g = colorData.g,
+				b = colorData.b
+			})
+			if not time or time < 0 or time > 1 or time < previousTime then
+				error("Keypoints de ColorSequence inválidos o desordenados.")
+			end
+			table.insert(keypoints, ColorSequenceKeypoint.new(time, color))
+			previousTime = time
+		end
+		return ColorSequence.new(keypoints)
 	elseif tipo == "Enum" then
 		local enumObjeto = Enum[tostring(valor.enum or "")]
 		if enumObjeto then
-			return enumObjeto[tostring(valor.value or "")]
+			local enumItem = enumObjeto[tostring(valor.value or "")]
+			if enumItem then
+				return enumItem
+			end
 		end
+		error("Enum inválido: " .. tostring(valor.enum) .. "." .. tostring(valor.value))
 	end
 
 	return valor
