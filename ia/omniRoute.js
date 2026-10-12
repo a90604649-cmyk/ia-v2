@@ -78,16 +78,14 @@ const PROPERTY_NAMES = new Set([
     "ExposureCompensation"
 ]);
 
-const EXTENDED_PROGRAMMER_RULES = [
-    "Puedes modificar instancias de Roblox Studio además de scripts, carpetas y remotes.",
-    "Acciones: create_instance, delete_instance, set_property, set_properties, rename_instance, move_instance, run_studio_test.",
-    "Para propiedades usa siempre set_property o set_properties; nunca escribas script.Enabled = false ni equivalentes dentro del Source.",
-    "Para mover usa move_instance; no uses Parent como propiedad.",
-    "Identifica objetos existentes con path + name + ClassName.",
-    "Conserva la arquitectura actual y modifica solo lo necesario.",
-    "Después de una modificación que pueda probarse, usa run_studio_test.",
-    "run_studio_test debe probar el comportamiento real del proyecto en Studio.",
-    "Cuando la prueba encuentre errores, esos errores se usarán para generar una corrección.",
+const EXTENDED_VFX_RULES = [
+    "Especialización estricta: creación y refinamiento de VFX/PFX dentro de Roblox Studio; no programación general.",
+    "Acciones admitidas para este proyecto: create_instance, set_property, set_properties, rename_instance y move_instance. delete_instance solo ante una petición explícita de borrar.",
+    "No crear Script, LocalScript, ModuleScript, RemoteEvent ni RemoteFunction; no usar run_studio_test para juzgar apariencia.",
+    "Para crear un efecto, crea primero Model/Folder contenedor, luego piezas y Attachments, y finalmente ParticleEmitter/Beam/Trail que dependan de ellos.",
+    "Usa rutas reales del proyecto; path identifica el contenedor padre, name el objeto nuevo y className la clase Roblox.",
+    "Para modificar propiedades usa set_property/set_properties; no uses Parent como propiedad, usa move_instance.",
+    "No declares una captura, inspección visual o corrección visual completada sin evidencia real.",
     "No inventes herramientas como get_source o read_source."
 ].join("\n");
 
@@ -335,20 +333,20 @@ function adaptarAccionesExtendidas(objeto) {
     return objeto;
 }
 
-async function enriquecerMensajesProgramador(messages) {
+async function enriquecerMensajesVFX(messages) {
     if (!Array.isArray(messages)) {
         return messages;
     }
 
-    const esProgramador = messages.some(
+    const esVFX = messages.some(
         (message) =>
             message?.role === "system" &&
-            /Eres el programador (principal|profesional) de Roblox Studio y Luau/i.test(
+            /artista técnico senior especializado EXCLUSIVAMENTE en crear y refinar efectos visuales/i.test(
                 String(message.content || "")
             )
     );
 
-    if (!esProgramador) {
+    if (!esVFX) {
         return messages;
     }
 
@@ -359,7 +357,7 @@ async function enriquecerMensajesProgramador(messages) {
     const systemIndex = enriched.findIndex(
         (message) =>
             message?.role === "system" &&
-            /Eres el programador (principal|profesional) de Roblox Studio y Luau/i.test(
+            /artista técnico senior especializado EXCLUSIVAMENTE en crear y refinar efectos visuales/i.test(
                 String(message.content || "")
             )
     );
@@ -369,7 +367,7 @@ async function enriquecerMensajesProgramador(messages) {
             String(
                 enriched[systemIndex].content || ""
             ),
-            EXTENDED_PROGRAMMER_RULES
+            EXTENDED_VFX_RULES
         ].join("\n\n");
     }
 
@@ -630,7 +628,7 @@ export async function preguntarOmniRoute(
     }
 
     const preparedMessages =
-        await enriquecerMensajesProgramador(
+        await enriquecerMensajesVFX(
             messages
         );
 
