@@ -1,14 +1,32 @@
-# Roblox AI Bridge
+# Roblox VFX Authoring Bridge
 
-Puente Node.js para Roblox Studio con **OmniRoute como único proveedor**. OmniRoute expone una API compatible con OpenAI y con `model=auto` se encarga de seleccionar el proveedor/modelo disponible.
+Herramienta especializada para crear y refinar efectos visuales directamente en Roblox Studio mediante OmniRoute y un plugin de Studio. El objetivo no es generar scripts para que el usuario los ejecute: es construir la jerarquía visual y configurar sus propiedades dentro del proyecto abierto.
 
-El mismo flujo sirve para conversación, razonamiento de programación, corrección de bugs, creación de sistemas, cambios en varios scripts y generación de animaciones R6.
+## Alcance actual
+
+- Crear y organizar instancias visuales en modo edición.
+- Configurar propiedades tipadas como Vector3, Color3, CFrame, NumberRange, NumberSequence y ColorSequence.
+- Trabajar con piezas auxiliares, Attachments, ParticleEmitters, Beams, Trails y luces compatibles con el bridge.
+- Consultar el catálogo de objetos real del proyecto para respetar rutas existentes.
+- Mantener los cambios separados en la rama `vfx-specialization`.
+
+## Límites que todavía deben probarse
+
+- La creación y asignación de propiedades aún debe verificarse en Roblox Studio real.
+- No hay un bucle de captura de viewport implementado y verificado en esta rama; por tanto, la IA no puede afirmar que ha evaluado visualmente el resultado.
+- Una prueba de juego no sustituye la revisión visual.
+- No se garantiza que toda respuesta del modelo sea válida; hay que verificar las acciones en el plugin y el registro de Studio.
+
+## Requisitos
+
+- Node.js 18 o superior.
+- OmniRoute disponible en la máquina local con un endpoint compatible con OpenAI Chat Completions.
+- Plugin Roblox AI Bridge instalado en Roblox Studio.
+- HTTP requests habilitadas para Studio cuando corresponda.
 
 ## Configuración
 
-Usa Node.js 18 o superior.
-
-Crea `ia/.env` a partir de `ia/.env.example`:
+Crea `ia/.env` a partir de `ia/.env.example` si está presente en tu clon, o crea el archivo con estas variables:
 
 ```env
 OMNIROUTE_API_KEY=tu_clave_de_omniroute
@@ -23,78 +41,40 @@ PROJECT_CONTEXT_PORT=3001
 PROJECT_CONTEXT_HOST=0.0.0.0
 ```
 
-La `OMNIROUTE_API_KEY` es la clave generada en OmniRoute en **Endpoints / Claves registradas**. No guardes la clave real en Git.
-
-No subas `.env` al repositorio.
+La clave se guarda solo en `.env`. No la pegues en el código ni la subas a GitHub.
 
 ## Ejecución
 
-Desde `ia/`:
+Desde la carpeta `ia/`:
 
 ```bash
 npm install
 npm start
 ```
 
-El servidor queda en `http://127.0.0.1:3000` y el contexto del proyecto en `http://127.0.0.1:3001`.
+El bridge escucha en `http://127.0.0.1:3000` y el contexto del proyecto usa el puerto `3001`.
 
-## Flujo de programación
+## Flujo
 
-Usuario → Roblox AI Bridge → **OmniRoute (`model=auto`)** → proveedor/modelo seleccionado → análisis del proyecto real → cambios → validación → Roblox Studio.
+Usuario describe un VFX → modelo diseña las capas → OmniRoute devuelve acciones estructuradas → el bridge aplica instancias y propiedades en Studio → se revisan errores y apariencia por separado.
 
-No existe fallback directo a otro proveedor: si OmniRoute no está disponible, el Bridge informa del error en lugar de cambiar de proveedor por su cuenta.
-
-## Scripts
-
-- `create_script`
-- `create_local_script`
-- `create_module_script`
-- `update_script`
-- `update_local_script`
-- `update_module_script`
-- `delete_script`
-- `delete_local_script`
-- `delete_module_script`
-
-## Remotes y carpetas
-
-- `create_remote_event`
-- `create_remote_function`
-- `delete_remote_event`
-- `delete_remote_function`
-- `create_folder`
-- `delete_folder`
-
-## Instancias y propiedades
-
-El bridge acepta acciones extendidas para trabajar con objetos de Roblox:
+## Acciones de instancia
 
 - `create_instance`
-- `delete_instance`
 - `set_property`
 - `set_properties`
 - `rename_instance`
 - `move_instance`
+- `delete_instance` solo para eliminaciones solicitadas explícitamente
 
-Las acciones extendidas pueden crear y configurar objetos como `Part`, `MeshPart`, `Model`, `Tool`, `RemoteEvent`, `RemoteFunction`, `Folder`, GUI, `Attachment`, `Motor6D` y otros tipos soportados por el plugin.
-
-Para propiedades se admiten valores normales y valores tipados como `Vector2`, `Vector3`, `Color3`, `CFrame`, `UDim2`, `BrickColor` y `Enum`.
-
-## Project Context
-
-El plugin escanea `Script`, `LocalScript`, `ModuleScript` y un catálogo limitado de objetos importantes para que la IA conozca las rutas reales del proyecto. El escaneo inicial ocurre al conectar y el automático está limitado a una actualización cada 5 minutos.
-
-## Animaciones R6
-
-El pipeline de animaciones R6 conserva la calibración y memoria existentes del proyecto.
+La IA especializada no debe crear scripts, remotes ni pruebas de juego como sustituto del efecto.
 
 ## Endpoints
 
 - `GET /` estado general del bridge.
 - `GET /health` estado de configuración del proveedor.
-- `POST /r6-calibration` recibe la calibración R6.
-- `GET /r6-calibration` devuelve la calibración actual.
-- `POST /selected-script` recibe el script seleccionado desde Roblox Studio.
-- `GET /next` entrega y limpia las acciones pendientes para Roblox Studio.
+- `GET /next` entrega las acciones pendientes al plugin.
 - `POST /project-scan` recibe el escaneo del proyecto.
-- `GET /project-context` devuelve el contexto relevante para una petición.
+- `GET /project-context` devuelve contexto relevante del proyecto.
+
+Consulta `PROJECT_LOG.md` para el estado de trabajo y las pruebas pendientes.
