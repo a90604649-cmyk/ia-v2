@@ -62,3 +62,10 @@ Create a single blue energy-orb effect directly in Studio edit mode, with an org
 - Added validation for sequence keypoint ordering, minimum keypoint count, and endpoints at times 0 and 1.
 - Wrapped typed conversion and property assignment together so malformed values are rejected as a logged action failure rather than escaping the property setter.
 - These changes have **not yet been run in Roblox Studio**. Syntax, model output compatibility, visual appearance, and Studio permissions remain unverified.
+
+
+## VFX plugin hardening — 2026-10-12
+- Corrected server-side VFX action validation to accept the native normalized action format produced by the VFX prompt, while retaining a visual-class allowlist, allowed container roots, and explicit user intent for deletion.
+- Hardened the Studio plugin to execute only VFX instance/property operations and only visual Roblox classes under Workspace, ReplicatedStorage, Lighting, or StarterGui.
+- The plugin now shares visual-object metadata only; project script source is not uploaded by the scan path.
+- The plugin-side visual screenshot capture/review loop is still not implemented. This work is not yet tested in Roblox Studio.
