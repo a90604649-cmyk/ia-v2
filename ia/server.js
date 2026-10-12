@@ -27,6 +27,7 @@ const PROJECT_CONTEXT_PORT = Number(
 );
 
 let pendingActions = [];
+let lastExecutionReport = null;
 
 let contextoScriptSeleccionado = null;
 let contextoProyectoActual = null;
@@ -2770,9 +2771,28 @@ app.get(
             pendingActions:
                 pendingActions.length,
 
+            lastExecutionReport,
+
             activeTests:
                 activeTestJobs.size
         });
+    }
+);
+
+app.post(
+    "/execution-results",
+    (req, res) => {
+        const data = req.body || {};
+        const actions = Array.isArray(data.actions) ? data.actions.slice(0, 200) : [];
+        lastExecutionReport = {
+            receivedAt: new Date().toISOString(),
+            requested: Math.max(0, Number(data.requested) || actions.length),
+            successful: Math.max(0, Number(data.successful) || 0),
+            failed: Math.max(0, Number(data.failed) || 0),
+            actions
+        };
+        console.log(`[RobloxAI] Resultado Studio: ${lastExecutionReport.successful} correctas | ${lastExecutionReport.failed} fallidas.`);
+        res.json({ ok: true });
     }
 );
 
