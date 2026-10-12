@@ -2350,32 +2350,19 @@ async function procesarVFX(
     const modo =
         soloAnalisis
             ? [
-                "MODO: SOLO ANÁLISIS.",
+                "MODO: SOLO ANÁLISIS VISUAL.",
                 "No implementes cambios.",
                 "actions debe ser []."
             ].join("\n")
-            : reparacion
-                ? [
-                    "MODO: REPARACIÓN DE SISTEMA EXISTENTE.",
-                    "Primero analiza el contexto real.",
-                    "Debes encontrar el sistema existente.",
-                    "NO crees scripts nuevos.",
-                    "NO crees instancias nuevas para reemplazar el sistema.",
-                    "NO inventes un sistema alternativo.",
-                    "Modifica solamente objetos reales encontrados en el contexto.",
-                    "Si no hay evidencia suficiente para modificar algo, no inventes una solución.",
-                    debeProbar
-                        ? "DEBES incluir run_studio_test."
-                        : ""
-                ].join("\n")
-                : [
-                    "MODO: IMPLEMENTACIÓN REAL.",
-                    "Analiza primero.",
-                    "Usa el mínimo cambio necesario.",
-                    "No crees scripts innecesarios.",
-                    "Usa propiedades reales.",
-                    "Prueba el cambio cuando sea posible."
-                ].join("\n");
+            : [
+                "MODO: CREACIÓN O REFINAMIENTO DIRECTO DE VFX.",
+                "No estás programando un sistema de juego.",
+                "Crea o modifica instancias visuales en el proyecto real de Studio.",
+                "Puedes añadir nuevas capas, piezas y Attachments si mejoran el efecto.",
+                "No crees scripts, remotes ni pruebas de juego.",
+                "Organiza el efecto bajo un Model o Folder dedicado.",
+                "No borres objetos ajenos a la petición."
+            ].join("\n");
 
     const contenido = [
         modo,
@@ -2744,20 +2731,14 @@ app.get(
                 OMNIROUTE_MODEL_ID,
 
             capabilities: [
-                "reasoning",
-                "scripts",
-                "RemoteEvent",
-                "RemoteFunction",
-                "folders",
-                "instances",
-                "properties",
-                "move",
-                "rename",
-                "studio-tests",
-                "test-results",
-                "auto-correction",
-                "real-object-validation",
-                "repair-create-block"
+                "vfx-authoring",
+                "particle-emitters",
+                "beams-trails-attachments",
+                "typed-visual-properties",
+                "number-color-sequences",
+                "direct-studio-instance-editing",
+                "organized-vfx-hierarchy",
+                "project-context"
             ],
 
             pendingActions:
