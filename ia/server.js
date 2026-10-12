@@ -1937,8 +1937,8 @@ function esAccionPermitidaVFX(action, mensajeUsuario = "") {
     const forbiddenClasses = new Set(["Script", "LocalScript", "ModuleScript", "RemoteEvent", "RemoteFunction"]);
     if (forbiddenClasses.has(className)) return false;
 
-    const visualClasses = new Set(["Folder", "Model", "Part", "MeshPart", "WedgePart", "CornerWedgePart", "Attachment", "ParticleEmitter", "Beam", "Trail", "PointLight", "SpotLight", "SurfaceLight", "Highlight", "Texture", "Decal", "SpecialMesh", "BlockMesh", "CylinderMesh", "Fire", "Smoke", "Sparkles", "BillboardGui", "SurfaceGui", "Frame", "ImageLabel", "ImageButton", "UIGradient", "UICorner", "PointLight"]);
-    if (actionType === "create_instance" && !visualClasses.has(className)) return false;
+    const visualClasses = new Set(["Folder", "Model", "Part", "MeshPart", "WedgePart", "CornerWedgePart", "Attachment", "ParticleEmitter", "Beam", "Trail", "PointLight", "SpotLight", "SurfaceLight", "Highlight", "Texture", "Decal", "SpecialMesh", "BlockMesh", "CylinderMesh", "Fire", "Smoke", "Sparkles", "BillboardGui", "SurfaceGui", "Frame", "ImageLabel", "ImageButton", "UIGradient", "UICorner"]);
+    if (!visualClasses.has(className)) return false;
 
     const allowed = new Set(["create_instance", "set_property", "set_properties", "rename_instance", "move_instance"]);
     if (allowed.has(actionType)) return true;
