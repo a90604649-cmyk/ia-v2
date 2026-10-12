@@ -2261,7 +2261,7 @@ async function pedirCorreccion(
                     role:
                         "system",
                     content:
-                        PROGRAMMER_SYSTEM
+                        VFX_SYSTEM
                 },
                 {
                     role:
@@ -2406,7 +2406,7 @@ async function procesarProgramacion(
             role:
                 "system",
             content:
-                PROGRAMMER_SYSTEM
+                VFX_SYSTEM
         },
         {
             role:
@@ -2424,7 +2424,7 @@ async function procesarProgramacion(
 
     try {
         console.log(
-            `🤖 OmniRoute programando con ${OMNIROUTE_MODEL_ID}...`
+            `🤖 OmniRoute diseñando VFX con ${OMNIROUTE_MODEL_ID}...`
         );
 
         if (
