@@ -41,12 +41,16 @@ Create a single blue energy-orb effect directly in Studio edit mode, with an org
 - [x] Initial repository review completed.
 - [x] Initial audit of the request/response protocol and plugin action path completed; further testing is still required.
 - [ ] Run Node syntax checks and validate the OmniRoute response-to-plugin action path.
+- [ ] Run Node syntax checks and validate the OmniRoute response-to-plugin action path.
 - [ ] Build and test the first edit-mode energy-orb effect in Roblox Studio.
 - [ ] Verify visual capture and correction workflow.
 
 
 ## Changes made on `vfx-specialization`
 - Replaced the server's programmer-focused system prompt with VFX authoring instructions: design intent, layer purpose, edit-mode workflow, truthful reporting, and strict JSON actions.
+- Added VFX-specific OmniRoute enrichment so the model receives instance-action rules and real project-object context.
+- Added a server-side allowlist that rejects script/remotes/game-test actions and accepts only visual instance/property actions; deletion is accepted only when the user explicitly asks to remove something.
+- Changed the request mode and health capability list to describe direct VFX authoring rather than general coding.
 - Added VFX-specific OmniRoute enrichment so the model receives instance-action rules and real project-object context.
 - Added a server-side allowlist that rejects script/remotes/game-test actions and accepts only visual instance/property actions; deletion is accepted only when the user explicitly asks to remove something.
 - Changed the request-mode text and health capability list to describe direct VFX authoring rather than general coding.
