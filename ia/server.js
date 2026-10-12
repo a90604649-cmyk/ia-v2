@@ -2315,18 +2315,16 @@ async function pedirCorreccion(
 
 /*
  * ============================================================
- * PROGRAMACIÓN
+ * CREACIÓN Y REFINAMIENTO DE VFX
  * ============================================================
  */
 
-async function procesarProgramacion(
+async function procesarVFX(
     mensajeUsuario,
     soloAnalisis = false
 ) {
-    const reparacion =
-        esReparacion(
-            mensajeUsuario
-        );
+    // El refinamiento de VFX puede requerir añadir capas; no aplicar restricciones de reparación de sistemas de código.
+    const reparacion = false;
 
     const proyecto =
         await obtenerContextoProyecto(
@@ -2346,14 +2344,8 @@ async function procesarProgramacion(
             6
         );
 
-    const debeProbar =
-        !soloAnalisis &&
-        (
-            reparacion ||
-            /corrige|arregla|soluciona|repara/i.test(
-                mensajeUsuario
-            )
-        );
+    // Las pruebas de juego no validan la apariencia de un VFX.
+    const debeProbar = false;
 
     const modo =
         soloAnalisis
@@ -2500,16 +2492,11 @@ async function procesarProgramacion(
 
             const retry = [
                 "RESPUESTA INVÁLIDA.",
-                "No puedes devolver solamente action, target o description.",
-                "No inventes objetos.",
-                "No crees scripts, instancias o sistemas nuevos durante esta reparación.",
-                "Debes localizar un objeto REAL del contexto.",
-                "El path, name y className deben corresponder a un objeto REAL del contexto.",
-                "Si modificas un script debes devolver el SOURCE COMPLETO.",
-                "Si no puedes identificar el objeto real, no fabriques una acción.",
-                "No uses herramientas.",
-                "No uses get_source.",
-                "No uses read_source.",
+                "No devuelvas solamente action, target o description: devuelve acciones ejecutables.",
+                "Para crear un VFX nuevo puedes crear instancias visuales nuevas; crea primero los padres y después sus hijos.",
+                "No crees scripts, remotes ni pruebas de juego.",
+                "Usa únicamente acciones de instancias y propiedades compatibles con el bridge.",
+                "No modifiques ni borres instancias existentes si no puedes identificarlas con seguridad.",
                 debeProbar
                     ? "También debes incluir run_studio_test."
                     : "",
@@ -3265,11 +3252,11 @@ app.listen(
         );
 
         console.log(
-            "Funciones: scripts + remotes + instancias + propiedades + pruebas + autocorrección"
+            "Funciones: creación y refinamiento de VFX mediante instancias y propiedades en Studio"
         );
 
         console.log(
-            "Sistema general sin categorías específicas."
+            "Modo especializado: VFX/PFX; no programación general."
         );
 
         console.log(
@@ -3316,7 +3303,7 @@ while (true) {
             texto
         )
     ) {
-        await procesarProgramacion(
+        await procesarVFX(
             texto,
             esSoloAnalisis(
                 texto
