@@ -74,6 +74,7 @@ La IA especializada no debe crear scripts, remotes ni pruebas de juego como sust
 - `GET /` estado general del bridge.
 - `GET /health` estado de configuración del proveedor.
 - `GET /next` entrega las acciones pendientes al plugin.
+- `POST /execution-results` recibe el resultado real de las acciones aplicadas por el plugin.
 - `POST /project-scan` recibe el escaneo del proyecto.
 - `GET /project-context` devuelve contexto relevante del proyecto.
 
