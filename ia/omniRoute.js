@@ -6,19 +6,11 @@ const OMNIROUTE_URL = String(
 ).trim();
 
 const OMNIROUTE_MODEL =
-    String(process.env.OMNIROUTE_MODEL || "auto").trim() || "auto";
+    String(process.env.OMNIROUTE_MODEL || "gemini/gemini-3.8-flash").trim() || "gemini/gemini-3.8-flash";
 
 const DEFAULT_TIMEOUT_MS = Math.max(
     5000,
     Number(process.env.OMNIROUTE_TIMEOUT_MS || 300000)
-);
-
-const DEFAULT_MAX_TOKENS = Math.min(
-    16384,
-    Math.max(
-        256,
-        Number(process.env.OMNIROUTE_MAX_OUTPUT_TOKENS || 16384)
-    )
 );
 
 const PROJECT_CONTEXT_PORT = Number(
@@ -526,17 +518,6 @@ function crearBody(messages, options) {
                 ? Number(options.temperature)
                 : 0.6,
 
-        max_tokens: Math.min(
-            16384,
-            Math.max(
-                256,
-                Number(
-                    options.maxCompletionTokens ||
-                    DEFAULT_MAX_TOKENS
-                )
-            )
-        ),
-
         stream: false
     };
 
@@ -799,8 +780,6 @@ export const OMNIROUTE_MODEL_ID =
 
 export const OMNIROUTE_CONFIG = {
     model: OMNIROUTE_MODEL,
-    maxCompletionTokens:
-        DEFAULT_MAX_TOKENS,
     url: OMNIROUTE_URL,
     reasoningEffort:
         process.env.OMNIROUTE_REASONING_EFFORT ||
