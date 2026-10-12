@@ -1918,32 +1918,52 @@ function contieneToolCalls(
 }
 
 function esAccionPermitidaVFX(action, mensajeUsuario = "") {
-    if (!action || typeof action !== "object" || action.type !== "update_script" || typeof action.code !== "string") {
-        return false;
-    }
+    if (!action || typeof action !== "object") return false;
 
+    // Accept native VFX actions and the packed envelope, then validate
+    // the actual operation in either representation.
+    let payload = action;
     const marker = "__ROBLOX_AI_EXTENDED_ACTION__";
-    if (!action.code.startsWith(marker)) return false;
-
-    let payload;
-    try {
-        payload = JSON.parse(action.code.slice(marker.length).trim());
-    } catch {
-        return false;
+    if (action.type === "update_script" && typeof action.code === "string") {
+        if (!action.code.startsWith(marker)) return false;
+        try {
+            payload = JSON.parse(action.code.slice(marker.length).trim());
+        } catch {
+            return false;
+        }
     }
+
+    if (!payload || typeof payload !== "object") return false;
 
     const actionType = String(payload.type || "");
     const className = String(payload.className || "");
-    const forbiddenClasses = new Set(["Script", "LocalScript", "ModuleScript", "RemoteEvent", "RemoteFunction"]);
-    if (forbiddenClasses.has(className)) return false;
+    const path = String(payload.path || "").replaceAll("\\", "/");
+    const root = path.split("/")[0];
+    const visualRoots = new Set(["Workspace", "ReplicatedStorage", "Lighting", "StarterGui"]);
+    if (!visualRoots.has(root)) return false;
 
-    const visualClasses = new Set(["Folder", "Model", "Part", "MeshPart", "WedgePart", "CornerWedgePart", "Attachment", "ParticleEmitter", "Beam", "Trail", "PointLight", "SpotLight", "SurfaceLight", "Highlight", "Texture", "Decal", "SpecialMesh", "BlockMesh", "CylinderMesh", "Fire", "Smoke", "Sparkles", "BillboardGui", "SurfaceGui", "Frame", "ImageLabel", "ImageButton", "UIGradient", "UICorner"]);
+    const visualClasses = new Set([
+        "Folder", "Model", "Part", "MeshPart", "WedgePart", "CornerWedgePart",
+        "Attachment", "ParticleEmitter", "Beam", "Trail", "PointLight", "SpotLight",
+        "SurfaceLight", "Highlight", "Texture", "Decal", "SpecialMesh", "BlockMesh",
+        "CylinderMesh", "Fire", "Smoke", "Sparkles", "BillboardGui", "SurfaceGui",
+        "Frame", "ImageLabel", "ImageButton", "UIGradient", "UICorner"
+    ]);
     if (!visualClasses.has(className)) return false;
 
-    const allowed = new Set(["create_instance", "set_property", "set_properties", "rename_instance", "move_instance"]);
-    if (allowed.has(actionType)) return true;
+    const allowed = new Set([
+        "create_instance", "set_property", "set_properties", "rename_instance", "move_instance"
+    ]);
+    if (allowed.has(actionType)) {
+        if (actionType === "move_instance") {
+            const targetPath = String(payload.targetPath || "").replaceAll("\\", "/");
+            if (!visualRoots.has(targetPath.split("/")[0])) return false;
+        }
+        return true;
+    }
 
-    const explicitlyRequestsDeletion = /elimina|eliminar|borra|borrar|quita|quitar|remove|delete/i.test(String(mensajeUsuario));
+    const explicitlyRequestsDeletion =
+        /elimina|eliminar|borra|borrar|quita|quitar|remove|delete/i.test(String(mensajeUsuario));
     return actionType === "delete_instance" && explicitlyRequestsDeletion;
 }
 function extraerResultado(
