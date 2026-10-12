@@ -420,6 +420,9 @@ local function convertirValor(valor)
 			table.insert(keypoints, NumberSequenceKeypoint.new(time, value, math.max(0, envelope)))
 			previousTime = time
 		end
+		if keypoints[1].Time ~= 0 or keypoints[#keypoints].Time ~= 1 then
+			error("NumberSequence debe empezar en tiempo 0 y terminar en tiempo 1.")
+		end
 		return NumberSequence.new(keypoints)
 	elseif tipo == "ColorSequence" then
 		if type(valor.keypoints) ~= "table" or #valor.keypoints < 2 then
@@ -442,6 +445,9 @@ local function convertirValor(valor)
 			end
 			table.insert(keypoints, ColorSequenceKeypoint.new(time, color))
 			previousTime = time
+		end
+		if keypoints[1].Time ~= 0 or keypoints[#keypoints].Time ~= 1 then
+			error("ColorSequence debe empezar en tiempo 0 y terminar en tiempo 1.")
 		end
 		return ColorSequence.new(keypoints)
 	elseif tipo == "Enum" then
@@ -474,9 +480,9 @@ local function aplicarPropiedad(objeto, nombre, valor)
 		return false
 	end
 
-	local convertido = convertirValor(valor)
-
+	local convertido
 	local ok, err = pcall(function()
+		convertido = convertirValor(valor)
 		objeto[nombre] = convertido
 	end)
 
