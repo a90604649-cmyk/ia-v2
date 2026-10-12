@@ -1,7 +1,7 @@
 {
   "name": "ia",
   "version": "1.1.0",
-  "description": "Roblox AI bridge with OmniRoute auto-routing for reasoning, coding and R6 animation generation",
+  "description": "OmniRoute-powered Roblox Studio VFX authoring bridge for direct instance and property editing",
   "main": "server.js",
   "scripts": {
     "start": "node start.js"
@@ -10,9 +10,11 @@
     "roblox",
     "luau",
     "omniroute",
-    "coding",
-    "reasoning",
-    "animations"
+    "vfx",
+    "pfx",
+    "particles",
+    "beams",
+    "roblox-studio"
   ],
   "author": "",
   "license": "ISC",
