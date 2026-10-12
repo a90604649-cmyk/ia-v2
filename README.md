@@ -26,7 +26,7 @@ Herramienta especializada para crear y refinar efectos visuales directamente en 
 
 ## Configuración
 
-Crea `ia/.env` a partir de `ia/.env.example` si está presente en tu clon, o crea el archivo con estas variables:
+Desde la carpeta `ia/`, copia `.env.example` como `.env` (en Windows PowerShell: `Copy-Item .env.example .env`) y reemplaza `pega_tu_clave_local_aqui` por tu clave de OmniRoute:
 
 ```env
 OMNIROUTE_API_KEY=tu_clave_de_omniroute
