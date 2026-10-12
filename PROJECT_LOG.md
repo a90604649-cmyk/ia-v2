@@ -50,6 +50,8 @@ Create a single blue energy-orb effect directly in Studio edit mode, with an org
 - Replaced the server's programmer-focused system prompt with VFX authoring instructions: design intent, layer purpose, edit-mode workflow, truthful reporting, and strict JSON actions.
 - Added VFX-specific OmniRoute enrichment so the model receives instance-action rules and real project-object context.
 - Added a server-side allowlist that rejects script/remotes/game-test actions and accepts only visual instance/property actions; deletion is accepted only when the user explicitly asks to remove something.
+- Added plugin-to-server action-result reporting so the server can record successful and failed Studio operations instead of assuming that queued actions succeeded.
+- Fixed the packed-action handler so it returns the real result of the extended action rather than reporting success merely because the marker was recognized.
 - Changed the request mode and health capability list to describe direct VFX authoring rather than general coding.
 - Added VFX-specific OmniRoute enrichment so the model receives instance-action rules and real project-object context.
 - Added a server-side allowlist that rejects script/remotes/game-test actions and accepts only visual instance/property actions; deletion is accepted only when the user explicitly asks to remove something.
