@@ -9,6 +9,7 @@ local NEXT_URL = BASE_URL .. "/next"
 local HEALTH_URL = BASE_URL .. "/health"
 local PROJECT_SCAN_URL = "http://127.0.0.1:3001/project-scan"
 local TEST_RESULTS_URL = BASE_URL .. "/test-results"
+local EXECUTION_RESULTS_URL = BASE_URL .. "/execution-results"
 
 local INTERVALO_ESCANEO = 300
 local MAX_SOURCE_CHARS = 340000
@@ -926,12 +927,12 @@ end
 
 local function intentarAccionEmpaquetada(action)
 	if type(action) ~= "table" or type(action.code) ~= "string" then
-		return false
+		return false, false
 	end
 
 	local marker = "__ROBLOX_AI_EXTENDED_ACTION__"
 	if action.type ~= "update_script" or action.code:sub(1, #marker) ~= marker then
-		return false
+		return false, false
 	end
 
 	local json = action.code:sub(#marker + 1):gsub("^%s+", "")
@@ -939,11 +940,33 @@ local function intentarAccionEmpaquetada(action)
 		return HttpService:JSONDecode(json)
 	end)
 
-	if ok and type(extended) == "table" then
-		ejecutarExtendedAction(extended)
+	if not ok or type(extended) ~= "table" then
+		warn("[Roblox AI] Acción extendida empaquetada inválida.")
+		return true, false
 	end
 
-	return true
+	return true, ejecutarExtendedAction(extended)
+end
+
+local function obtenerResumenAccion(action)
+	local summary = {
+		type = tostring(action.type or action.action or "unknown"),
+		path = tostring(action.path or ""),
+		name = tostring(action.name or ""),
+		ok = false
+	}
+	local marker = "__ROBLOX_AI_EXTENDED_ACTION__"
+	if summary.type == "update_script" and type(action.code) == "string" and action.code:sub(1, #marker) == marker then
+		local ok, payload = pcall(function()
+			return HttpService:JSONDecode(action.code:sub(#marker + 1):gsub("^%s+", ""))
+		end)
+		if ok and type(payload) == "table" then
+			summary.type = tostring(payload.type or summary.type)
+			summary.path = tostring(payload.path or summary.path)
+			summary.name = tostring(payload.name or summary.name)
+		end
+	end
+	return summary
 end
 
 local function ejecutarAccion(action)
@@ -951,8 +974,9 @@ local function ejecutarAccion(action)
 		return false
 	end
 
-	if intentarAccionEmpaquetada(action) then
-		return true
+	local handled, packedSuccess = intentarAccionEmpaquetada(action)
+	if handled then
+		return packedSuccess
 	end
 
 	local tipo = string.lower(tostring(action.type or action.action or ""))
@@ -1021,13 +1045,17 @@ local function consultarServidor()
 
 	local exitosas = 0
 	local fallidas = 0
+	local detalles = {}
 
 	for _, action in ipairs(data.actions) do
+		local resumen = obtenerResumenAccion(action)
 		local okAction, resultado = pcall(function()
 			return ejecutarAccion(action)
 		end)
+		resumen.ok = okAction and resultado == true
+		table.insert(detalles, resumen)
 
-		if okAction and resultado then
+		if resumen.ok then
 			exitosas += 1
 		else
 			fallidas += 1
@@ -1038,7 +1066,26 @@ local function consultarServidor()
 	end
 
 	print("[Roblox AI] Resultado acciones: " .. exitosas .. " exitosas | " .. fallidas .. " fallidas")
-	ChangeHistoryService:SetWaypoint("Cambios OmniRoute completados")
+	local reportOk, reportResponse = pcall(function()
+		return HttpService:RequestAsync({
+			Url = EXECUTION_RESULTS_URL,
+			Method = "POST",
+			Headers = {
+				["Content-Type"] = "application/json",
+				["Accept"] = "application/json"
+			},
+			Body = HttpService:JSONEncode({
+				requested = #data.actions,
+				successful = exitosas,
+				failed = fallidas,
+				actions = detalles
+			})
+		})
+	end)
+	if not reportOk or not reportResponse.Success then
+		warn("[Roblox AI] No se pudo informar el resultado de las acciones al servidor.")
+	end
+	ChangeHistoryService:SetWaypoint("Cambios VFX completados")
 
 	if exitosas > 0 then
 		escanearProyecto()
