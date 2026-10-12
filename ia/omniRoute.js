@@ -386,8 +386,13 @@ async function enriquecerMensajesVFX(messages) {
         return enriched;
     }
 
-    const query = String(
-        enriched[userIndex].content || ""
+    const userContent = enriched[userIndex].content;
+    const query = (
+        typeof userContent === "string"
+            ? userContent
+            : Array.isArray(userContent)
+                ? userContent.filter((part) => part?.type === "text").map((part) => String(part.text || "")).join("\n")
+                : String(userContent || "")
     ).slice(-12000);
 
     try {
@@ -425,13 +430,24 @@ async function enriquecerMensajesVFX(messages) {
             )
             .join("\n");
 
-        enriched[userIndex].content = [
-            enriched[userIndex].content,
+        const contextText = [
             "",
             "CATÁLOGO REAL DE OBJETOS DE ROBLOX STUDIO:",
             lines,
             "Usa únicamente estas rutas y clases como referencia."
         ].join("\n");
+
+        if (Array.isArray(enriched[userIndex].content)) {
+            enriched[userIndex].content = [
+                ...enriched[userIndex].content,
+                { type: "text", text: contextText }
+            ];
+        } else {
+            enriched[userIndex].content = [
+                enriched[userIndex].content,
+                contextText
+            ].join("\n");
+        }
     } catch {
         // El contexto principal ya puede venir en el mensaje.
     }
