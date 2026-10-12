@@ -20,7 +20,7 @@ local MAX_OBJECTS = 1500
 local toolbar = plugin:CreateToolbar("Roblox AI")
 local button = toolbar:CreateButton(
 	"Roblox AI",
-	"Conectar Roblox Studio con OmniRoute",
+	"Crear y refinar efectos visuales con la IA de VFX",
 	""
 )
 button.ClickableWhenViewportHidden = true
@@ -31,20 +31,68 @@ local escaneando = false
 local ultimoEscaneo = 0
 
 local SERVICIOS = {
-	ServerScriptService = game:GetService("ServerScriptService"),
-	ServerStorage = game:GetService("ServerStorage"),
 	ReplicatedStorage = game:GetService("ReplicatedStorage"),
 	StarterGui = game:GetService("StarterGui"),
-	StarterPlayer = game:GetService("StarterPlayer"),
-	StarterPack = game:GetService("StarterPack"),
 	Workspace = workspace,
-	SoundService = game:GetService("SoundService"),
-	Lighting = game:GetService("Lighting"),
-	ReplicatedFirst = game:GetService("ReplicatedFirst"),
-	Teams = game:GetService("Teams"),
-	TextChatService = game:GetService("TextChatService"),
-	Chat = game:GetService("Chat")
+	Lighting = game:GetService("Lighting")
 }
+
+local VFX_ROOTS = {
+	Workspace = true,
+	ReplicatedStorage = true,
+	Lighting = true,
+	StarterGui = true
+}
+
+local VFX_INSTANCE_CLASSES = {
+	Folder = true,
+	Model = true,
+	Part = true,
+	MeshPart = true,
+	WedgePart = true,
+	CornerWedgePart = true,
+	Attachment = true,
+	ParticleEmitter = true,
+	Beam = true,
+	Trail = true,
+	PointLight = true,
+	SpotLight = true,
+	SurfaceLight = true,
+	Highlight = true,
+	Texture = true,
+	Decal = true,
+	SpecialMesh = true,
+	BlockMesh = true,
+	CylinderMesh = true,
+	Fire = true,
+	Smoke = true,
+	Sparkles = true,
+	BillboardGui = true,
+	SurfaceGui = true,
+	Frame = true,
+	ImageLabel = true,
+	ImageButton = true,
+	UIGradient = true,
+	UICorner = true
+}
+
+local VFX_ACTION_TYPES = {
+	create_instance = true,
+	set_property = true,
+	set_properties = true,
+	rename_instance = true,
+	move_instance = true,
+	delete_instance = true
+}
+
+local function raizVFXPermitida(ruta)
+	if type(ruta) ~= "string" or ruta == "" then
+		return false
+	end
+	local normalizada = ruta:gsub("\\", "/")
+	local raiz = string.match(normalizada, "^([^/]+)")
+	return VFX_ROOTS[raiz] == true
+end
 
 local SCRIPT_TYPES = {
 	create_script = "Script",
@@ -233,9 +281,9 @@ local function recolectarObjetos()
 				break
 			end
 
-			if not debeIgnorar(objeto) then
+			if not debeIgnorar(objeto) and VFX_INSTANCE_CLASSES[objeto.ClassName] then
 				local ruta = obtenerRuta(objeto)
-				if ruta then
+				if ruta and raizVFXPermitida(ruta) then
 					table.insert(resultado, {
 						className = objeto.ClassName,
 						name = objeto.Name,
@@ -312,7 +360,8 @@ local function escanearProyecto()
 
 	escaneando = true
 
-	local scripts = recolectarScripts()
+	-- En modo VFX solo se comparte metadata de instancias visuales; nunca código fuente de scripts.
+	local scripts = {}
 	local objects = recolectarObjetos()
 	local lotes = dividirLotes(scripts)
 	local correcto = true
@@ -692,17 +741,22 @@ end
 
 local function ejecutarExtendedAction(action)
 	local tipo = string.lower(tostring(action.type or ""))
-
-	if tipo == "run_studio_test" then
-		return ejecutarStudioTest(action)
+	if not VFX_ACTION_TYPES[tipo] then
+		warn("[Roblox AI] Acción rechazada: el plugin solo ejecuta operaciones VFX.")
+		return false
 	end
 
 	local path = tostring(action.path or "")
 	local name = tostring(action.name or "")
+	if not raizVFXPermitida(path) then
+		warn("[Roblox AI] Ruta rechazada fuera de los contenedores VFX permitidos:", path)
+		return false
+	end
 
 	if tipo == "create_instance" then
 		local className = tostring(action.className or "")
-		if className == "" or name == "" then
+		if not VFX_INSTANCE_CLASSES[className] or name == "" then
+			warn("[Roblox AI] Clase rechazada: no pertenece a la lista visual VFX:", className)
 			return false
 		end
 
@@ -744,6 +798,11 @@ local function ejecutarExtendedAction(action)
 		return false
 	end
 
+	if not VFX_INSTANCE_CLASSES[object.ClassName] then
+		warn("[Roblox AI] Objeto rechazado: no es un objeto visual VFX:", object:GetFullName())
+		return false
+	end
+
 	if not claseCoincide(object, action.className) then
 		warn("[Roblox AI] ClassName no coincide:", object:GetFullName(), object.ClassName, action.className)
 		return false
@@ -782,6 +841,10 @@ local function ejecutarExtendedAction(action)
 
 	if tipo == "move_instance" then
 		local targetPath = tostring(action.targetPath or "")
+		if not raizVFXPermitida(targetPath) then
+			warn("[Roblox AI] Destino rechazado fuera de los contenedores VFX permitidos:", targetPath)
+			return false
+		end
 		local destination = obtenerContenedor(targetPath, false)
 		if not destination then
 			warn("[Roblox AI] Destino no encontrado:", targetPath)
@@ -981,31 +1044,12 @@ local function ejecutarAccion(action)
 
 	local tipo = string.lower(tostring(action.type or action.action or ""))
 	action.type = tipo
-
-	if SCRIPT_TYPES[tipo] then
-		return ejecutarScriptAction(action)
+	if not VFX_ACTION_TYPES[tipo] then
+		warn("[Roblox AI] Acción rechazada: solo se aceptan acciones de creación y edición VFX.", tipo)
+		return false
 	end
 
-	if REMOTE_TYPES[tipo] then
-		return ejecutarRemoteAction(action)
-	end
-
-	if tipo == "create_folder" or tipo == "delete_folder" then
-		return ejecutarCarpeta(action)
-	end
-
-	if tipo == "create_instance"
-		or tipo == "delete_instance"
-		or tipo == "set_property"
-		or tipo == "set_properties"
-		or tipo == "rename_instance"
-		or tipo == "move_instance"
-		or tipo == "run_studio_test" then
-		return ejecutarExtendedAction(action)
-	end
-
-	warn("[Roblox AI] Accion desconocida:", tipo)
-	return false
+	return ejecutarExtendedAction(action)
 end
 
 local function consultarServidor()
@@ -1040,7 +1084,7 @@ local function consultarServidor()
 		return
 	end
 
-	print("[Roblox AI] 📥 Acciones OmniRoute:", #data.actions)
+	print("[Roblox AI] 📥 Acciones VFX:", #data.actions)
 	ChangeHistoryService:SetWaypoint("Antes de cambios OmniRoute")
 
 	local exitosas = 0
@@ -1128,7 +1172,7 @@ button.Click:Connect(function()
 	print("=================================")
 	print("[Roblox AI] 🟢 CONECTADO")
 	print("[Roblox AI] Proveedor: OmniRoute")
-	print("[Roblox AI] Acciones: crear, eliminar, modificar, propiedades, mover, renombrar, pruebas")
+	print("[Roblox AI] Modo VFX: instancias visuales y propiedades; sin scripts, remotos ni pruebas de juego")
 	print("[Roblox AI] Escaneo: al conectar + cada 5 minutos")
 	print("=================================")
 
