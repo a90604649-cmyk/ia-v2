@@ -1912,6 +1912,27 @@ function contieneToolCalls(
     );
 }
 
+function esAccionPermitidaVFX(action, mensajeUsuario = "") {
+    if (!action || typeof action !== "object" || action.type !== "update_script" || typeof action.code !== "string") {
+        return false;
+    }
+
+    const marker = "__ROBLOX_AI_EXTENDED_ACTION__";
+    if (!action.code.startsWith(marker)) return false;
+
+    let payload;
+    try {
+        payload = JSON.parse(action.code.slice(marker.length).trim());
+    } catch {
+        return false;
+    }
+
+    const allowed = new Set(["create_instance", "set_property", "set_properties", "rename_instance", "move_instance"]);
+    if (allowed.has(String(payload.type || ""))) return true;
+
+    const explicitlyRequestsDeletion = /elimina|eliminar|borra|borrar|quita|quitar|remove|delete/i.test(String(mensajeUsuario));
+    return payload.type === "delete_instance" && explicitlyRequestsDeletion;
+}
 function extraerResultado(
     texto,
     options = {}
@@ -1956,6 +1977,11 @@ function extraerResultado(
                 raw,
                 options
             );
+
+        if (action && !esAccionPermitidaVFX(action, options.mensajeUsuario)) {
+            console.warn("⚠️ Acción rechazada: esta rama solo permite acciones visuales de VFX.");
+            continue;
+        }
 
         if (action) {
             actions.push(
