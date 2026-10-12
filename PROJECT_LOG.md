@@ -39,6 +39,15 @@ Create a single blue energy-orb effect directly in Studio edit mode, with an org
 ## Status
 - [x] Created isolated branch `vfx-specialization` from `main`.
 - [x] Initial repository review completed.
-- [ ] Audit the full request/response protocol and plugin action allowlist.
-- [ ] Build and test the first edit-mode energy-orb effect.
+- [x] Initial audit of the request/response protocol and plugin action path completed; further testing is still required.
+- [ ] Build and test the first edit-mode energy-orb effect in Roblox Studio.
 - [ ] Verify visual capture and correction workflow.
+
+
+## Changes made on `vfx-specialization`
+- Replaced the server's programmer-focused system prompt with VFX authoring instructions: design intent, layer purpose, edit-mode workflow, truthful reporting, and strict JSON actions.
+- Routed all former programmer-prompt references through the VFX prompt.
+- Extended the Studio bridge's typed property conversion to support `NumberRange`, `NumberSequence`, and `ColorSequence`, alongside existing vector/color/CFrame/UDim2/Enum types.
+- Added validation for sequence keypoint ordering, minimum keypoint count, and endpoints at times 0 and 1.
+- Wrapped typed conversion and property assignment together so malformed values are rejected as a logged action failure rather than escaping the property setter.
+- These changes have **not yet been run in Roblox Studio**. Syntax, model output compatibility, visual appearance, and Studio permissions remain unverified.
