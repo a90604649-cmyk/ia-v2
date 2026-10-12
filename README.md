@@ -31,17 +31,17 @@ Desde la carpeta `ia/`, copia `.env.example` como `.env` (en Windows PowerShell:
 ```env
 OMNIROUTE_API_KEY=tu_clave_de_omniroute
 OMNIROUTE_URL=http://127.0.0.1:20128/v1/chat/completions
-OMNIROUTE_MODEL=auto
-OMNIROUTE_ENABLED=true
+OMNIROUTE_MODEL=gemini/gemini-3.8-flash
 OMNIROUTE_TIMEOUT_MS=300000
-OMNIROUTE_PROGRESS=true
+OMNIROUTE_REASONING_EFFORT=none
 
 PORT=3000
 PROJECT_CONTEXT_PORT=3001
 PROJECT_CONTEXT_HOST=0.0.0.0
+BRIDGE_INPUT_PORT=3030
 ```
 
-La clave se guarda solo en `.env`. No la pegues en el código ni la subas a GitHub.
+La clave se guarda solo en `.env`. No la pegues en el código ni la subas a GitHub. El bridge no fija `max_tokens`; OmniRoute y el proveedor aplican sus cuotas propias. El timeout solo evita que una solicitud quede colgada indefinidamente.
 
 ## Ejecución
 
