@@ -2414,9 +2414,11 @@ async function procesarVFX(
         seleccionado,
         "",
         "VERIFICACIÓN OBLIGATORIA:",
-        "No digas que un sistema no existe sin revisar el MANIFEST y SOURCE.",
-        "Si encuentras un script relacionado, usa ese script.",
-        "La respuesta será ejecutada por Roblox Studio."
+        "Usa el MANIFEST y el catálogo de objetos para identificar contenedores y anclajes reales.",
+        "No inspecciones ni modifiques SOURCE de scripts como sustituto del trabajo visual.",
+        "Si el usuario indica un objeto de destino, verifica que exista en el contexto antes de referenciarlo.",
+        "Si no se especifica un anclaje, crea el efecto bajo un Model dedicado en Workspace sin modificar objetos ajenos.",
+        "La respuesta será ejecutada por Roblox Studio en modo edición."
     ].join("\n");
 
     const messages = [
@@ -3310,7 +3312,7 @@ const rl =
     });
 
 console.log(
-    "Escribe una petición para OmniRoute. Escribe 'salir' para cerrar.\n"
+    "Describe el VFX que quieres crear o mejorar. Escribe 'salir' para cerrar.\n"
 );
 
 while (true) {
