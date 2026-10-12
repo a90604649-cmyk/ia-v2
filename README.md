@@ -13,7 +13,7 @@ Herramienta especializada para crear y refinar efectos visuales directamente en 
 ## Límites que todavía deben probarse
 
 - La creación y asignación de propiedades aún debe verificarse en Roblox Studio real.
-- No hay un bucle de captura de viewport implementado y verificado en esta rama; por tanto, la IA no puede afirmar que ha evaluado visualmente el resultado.
+- El servidor ya tiene el receptor de capturas y la lógica de revisión visual acotada, pero todavía falta conectar la captura y el envío desde el plugin de Studio. Hasta que se pruebe ese recorrido completo, la IA no puede afirmar que ha evaluado visualmente el resultado.
 - Una prueba de juego no sustituye la revisión visual.
 - No se garantiza que toda respuesta del modelo sea válida; hay que verificar las acciones en el plugin y el registro de Studio.
 
@@ -75,6 +75,7 @@ La IA especializada no debe crear scripts, remotes ni pruebas de juego como sust
 - `GET /health` estado de configuración del proveedor.
 - `GET /next` entrega las acciones pendientes al plugin.
 - `POST /execution-results` recibe el resultado real de las acciones aplicadas por el plugin.
+- `POST /visual-capture` recibe una captura PNG del viewport para revisión visual.
 - `POST /project-scan` recibe el escaneo del proyecto.
 - `GET /project-context` devuelve contexto relevante del proyecto.
 
