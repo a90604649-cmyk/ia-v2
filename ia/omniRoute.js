@@ -5,8 +5,10 @@ const OMNIROUTE_URL = String(
     "http://127.0.0.1:20128/v1/chat/completions"
 ).trim();
 
-const OMNIROUTE_MODEL =
-    String(process.env.OMNIROUTE_MODEL || "nvidia/nvidia/nemotron-3-ultra-550b-a55b").trim() || "nvidia/nvidia/nemotron-3-ultra-550b-a55b";
+const OMNIROUTE_MODEL = String(
+    process.env.OMNIROUTE_MODEL ||
+    "nvidia/nvidia/nemotron-3-ultra-550b-a55b"
+).trim() || "nvidia/nvidia/nemotron-3-ultra-550b-a55b";
 
 const DEFAULT_TIMEOUT_MS = Math.max(
     5000,
