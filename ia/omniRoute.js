@@ -6,7 +6,7 @@ const OMNIROUTE_URL = String(
 ).trim();
 
 const OMNIROUTE_MODEL =
-    String(process.env.OMNIROUTE_MODEL || "gemini/gemini-3.8-flash").trim() || "gemini/gemini-3.8-flash";
+    String(process.env.OMNIROUTE_MODEL || "nvidia/nvidia/nemotron-3-ultra-550b-a55b").trim() || "nvidia/nvidia/nemotron-3-ultra-550b-a55b";
 
 const DEFAULT_TIMEOUT_MS = Math.max(
     5000,
@@ -604,6 +604,27 @@ function esReintentable(status, mensaje) {
     );
 }
 
+function extraerEsperaColaMs(mensaje) {
+    const text = String(mensaje || "").toLowerCase();
+
+    if (!text.includes("queue budget")) {
+        return null;
+    }
+
+    const match = text.match(/reset after\s+(\d+(?:\.\d+)?)\s*s\b/i);
+    if (!match) {
+        return null;
+    }
+
+    const resetMs = Number(match[1]) * 1000;
+    if (!Number.isFinite(resetMs) || resetMs < 0) {
+        return null;
+    }
+
+    // Espera un segundo adicional para no reintentar justo en el límite.
+    return Math.min(30000, Math.max(1000, Math.ceil(resetMs) + 1000));
+}
+
 function esperar(ms) {
     return new Promise(
         (resolve) => setTimeout(resolve, ms)
@@ -636,7 +657,7 @@ export async function preguntarOmniRoute(
             Number(
                 options.attempts ||
                 options.attemptsPerKey ||
-                2
+                3
             )
         )
     );
@@ -696,13 +717,17 @@ export async function preguntarOmniRoute(
                     ) &&
                     attempt < attempts
                 ) {
-                    const wait =
-                        Math.min(
-                            15000,
-                            1000 *
-                                (2 **
-                                    (attempt - 1))
+                    const queueWait = extraerEsperaColaMs(message);
+                    const wait = queueWait ?? Math.min(
+                        15000,
+                        1000 * (2 ** (attempt - 1))
+                    );
+
+                    if (queueWait !== null) {
+                        console.warn(
+                            `[OmniRoute] La cola pidió reiniciar después de un intervalo; reintentando en ${wait} ms (intento ${attempt}/${attempts}).`
                         );
+                    }
 
                     await esperar(wait);
                     continue;
@@ -751,13 +776,17 @@ export async function preguntarOmniRoute(
                 ) &&
                 attempt < attempts
             ) {
-                const wait =
-                    Math.min(
-                        15000,
-                        1000 *
-                            (2 **
-                                (attempt - 1))
+                const queueWait = extraerEsperaColaMs(message);
+                const wait = queueWait ?? Math.min(
+                    15000,
+                    1000 * (2 ** (attempt - 1))
+                );
+
+                if (queueWait !== null) {
+                    console.warn(
+                        `[OmniRoute] La cola pidió reiniciar después de un intervalo; reintentando en ${wait} ms (intento ${attempt}/${attempts}).`
                     );
+                }
 
                 await esperar(wait);
                 continue;
