@@ -80,7 +80,11 @@ const EXTENDED_VFX_RULES = [
     "Usa rutas reales del proyecto; path identifica el contenedor padre, name el objeto nuevo y className la clase Roblox.",
     "Para modificar propiedades usa set_property/set_properties; no uses Parent como propiedad, usa move_instance.",
     "No declares una captura, inspección visual o corrección visual completada sin evidencia real.",
-    "No inventes herramientas como get_source o read_source."
+    "No inventes herramientas como get_source o read_source.",
+    "TEXTURA: un ParticleEmitter sin Texture valida es invisible. Nunca inventes rbxassetid://. Usa la biblioteca ReplicatedStorage/VFXTextures, una textura que ya exista en el proyecto, o un assetId del usuario. El bridge valida y rechaza las que no existen.",
+    "JERARQUIA: ParticleEmitter/Beam/Trail/Fire/Smoke/Sparkles y PointLight/SpotLight/SurfaceLight deben ser hijos DIRECTOS de una BasePart o un Attachment; dentro de un Folder no emiten ni iluminan.",
+    "RATE: en esta rama no hay scripts que disparen Emit(), asi que un ParticleEmitter con Rate = 0 nunca emite y el VFX queda invisible. Pon SIEMPRE un Rate mayor que 0 (fuego 50-80, chispas 60-100, humo 8-15, anillos 15-25). El bridge rechaza Rate = 0.",
+
 ].join("\n");
 
 function limpiarMarkdownJson(texto) {
