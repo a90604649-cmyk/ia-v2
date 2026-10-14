@@ -41,7 +41,7 @@ PROJECT_CONTEXT_HOST=0.0.0.0
 BRIDGE_INPUT_PORT=3030
 ```
 
-La clave se guarda solo en `.env`. No la pegues en el código ni la subas a GitHub. `OMNIROUTE_API_KEY` debe seguir siendo la clave local de OmniRoute; la credencial de NVIDIA se configura dentro de OmniRoute. El modelo de ejemplo es `nvidia/nvidia/nemotron-3-ultra-550b-a55b`, que debe aparecer disponible en el catálogo de tu instancia. El bridge no fija `max_tokens`; OmniRoute y el proveedor aplican sus cuotas propias. Para errores de cola con `reset after Ns`, el bridge reintenta hasta tres intentos y espera el intervalo indicado más un segundo. Esto mejora el reintento, pero no evita que un proveedor saturado siga fallando.
+La clave se guarda solo en `.env`. No la pegues en el código ni la subas a GitHub. `OMNIROUTE_API_KEY` debe seguir siendo la clave local de OmniRoute; la credencial de NVIDIA se configura dentro de OmniRoute. El modelo de ejemplo es `nvidia/nvidia/nemotron-3-ultra-550b-a55b`, que debe aparecer disponible en el catálogo de tu instancia. El bridge no fija `max_tokens`; OmniRoute y el proveedor aplican sus cuotas propias. Para errores de cola con `reset after Ns`, el bridge reintenta hasta tres intentos y espera el intervalo indicado más un segundo. Esto mejora el reintento, pero no evita que un proveedor saturado siga fallando. Si ya tienes un `.env` creado, editar `.env.example` no lo modifica: abre `ia/.env` y cambia manualmente la línea `OMNIROUTE_MODEL` a `nvidia/nvidia/nemotron-3-ultra-550b-a55b`. Conserva `OMNIROUTE_API_KEY` como tu clave local de OmniRoute.
 
 ## Ejecución
 
