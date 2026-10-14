@@ -69,3 +69,9 @@ Create a single blue energy-orb effect directly in Studio edit mode, with an org
 - Hardened the Studio plugin to execute only VFX instance/property operations and only visual Roblox classes under Workspace, ReplicatedStorage, Lighting, or StarterGui.
 - The plugin now shares visual-object metadata only; project script source is not uploaded by the scan path.
 - The plugin-side visual screenshot capture/review loop is still not implemented. This work is not yet tested in Roblox Studio.
+
+## NVIDIA model and queue retry update — 2026-10-13
+- Changed the source fallback and `ia/.env.example` default to `nvidia/nvidia/nemotron-3-ultra-550b-a55b`, matching the NVIDIA Nemotron 3 Ultra entry shown in the user's OmniRoute catalog.
+- Increased the default transient-error retry budget to three attempts and added queue-budget-aware waits: when OmniRoute reports `reset after Ns`, the bridge waits that interval plus one second before retrying (capped at 30 seconds).
+- Updated README setup notes to distinguish the local OmniRoute API key from the NVIDIA provider credential stored inside OmniRoute.
+- Not yet verified against the user's live NVIDIA connection or with a Roblox Studio VFX request. The existing local `ia/.env` is gitignored and will not change when pulling these commits; update its `OMNIROUTE_MODEL` value manually to `nvidia/nvidia/nemotron-3-ultra-550b-a55b`.
