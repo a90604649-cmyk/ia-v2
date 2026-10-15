@@ -40,6 +40,7 @@ let contextoProyectoActual = null;
 const historial = [];
 const testResults = new Map();
 const activeTestJobs = new Map();
+const visualAnalysisCache = new WeakMap();
 
 const MAX_TEST_CYCLES = 3;
 const MAX_VFX_ACTIONS = 120;
@@ -2787,7 +2788,7 @@ const CHAT_SYSTEM = [
 								model: NVIDIA_VISION_MODEL,
 								messages,
 								temperature: 0.1,
-								max_tokens: 16384,
+								max_tokens: 1200,
 								// VFX creation needs a final JSON, not a long reasoning trace.
 								chat_template_kwargs: {
 									enable_thinking: false
@@ -2832,20 +2833,109 @@ const CHAT_SYSTEM = [
 					}
 				}
 
+				async function analizarReferenciaVisual(messages) {
+					if (visualAnalysisCache.has(messages)) {
+						return visualAnalysisCache.get(messages);
+					}
+
+					const imagePart = messages
+						.filter((message) => message?.role === "user" && Array.isArray(message.content))
+						.flatMap((message) => message.content)
+						.find((part) => part?.type === "image_url" && typeof part.image_url?.url === "string");
+
+					if (!imagePart) {
+						throw new Error("No encontré una imagen válida para analizar.");
+					}
+
+					const analysisPromise = (async () => {
+						console.log("[RobloxAI] Analizando la referencia visual de forma compacta...");
+						const analysis = await preguntarNvidiaVision([
+							{
+								role: "system",
+								content: [
+									"Eres un artista técnico senior de VFX para Roblox.",
+									"Describe únicamente lo que se aprecia en la imagen.",
+									"Explica silueta, capas visibles, paleta, formas, contraste, brillo, dirección y composición.",
+									"No generes JSON de acciones, scripts, ni nombres de objetos de Roblox.",
+									"No inventes detalles ocultos ni describas animación como observada si es una imagen estática.",
+									"Responde en español en menos de 180 palabras, como una guía visual para construir el efecto."
+								].join("\n")
+							},
+							{
+								role: "user",
+								content: [
+									{
+										type: "text",
+										text: "Analiza esta referencia para replicar su estilo visual en un VFX editable de Roblox Studio. Describe solamente los rasgos visuales útiles."
+									},
+									imagePart
+								]
+							}
+						]);
+
+						const cleanAnalysis = String(analysis || "").trim();
+						if (!cleanAnalysis) {
+							throw new Error("El modelo visual no devolvió una descripción utilizable.");
+						}
+						console.log("[RobloxAI] Descripción visual recibida; ahora el modelo de texto diseñará las acciones.");
+						return cleanAnalysis;
+					})().catch((error) => {
+						visualAnalysisCache.delete(messages);
+						throw error;
+					});
+
+					visualAnalysisCache.set(messages, analysisPromise);
+					return analysisPromise;
+				}
+
 				async function pedirRespuestaEjecutable(messages, extra = "") {
 					const finalMessages = extra
 						? [...messages, { role: "user", content: extra }]
 						: messages;
+
 					const contieneImagen = finalMessages.some((message) =>
 						Array.isArray(message?.content) &&
 						message.content.some((part) =>
 							part?.type === "image_url" && typeof part.image_url?.url === "string"
 						)
 					);
+
 					if (contieneImagen && process.env.NVIDIA_API_KEY?.trim()) {
-						console.log(`🖼️ Imagen detectada. Enviando a la API visual directa de NVIDIA: ${NVIDIA_VISION_MODEL}...`);
-						return preguntarNvidiaVision(finalMessages);
+						const analisisVisual = await analizarReferenciaVisual(messages);
+						const mensajesTextuales = finalMessages.map((message) => {
+							if (!Array.isArray(message?.content)) return message;
+							const tieneImagen = message.content.some((part) => part?.type === "image_url");
+							if (!tieneImagen) return message;
+
+							const texto = message.content
+								.filter((part) => part?.type === "text")
+								.map((part) => String(part.text || ""))
+								.join("\n")
+								.replace(/(?:^|\n)\s*@img:\s*(?:"[^"]+"|'[^']+'|[^\s]+)\s*/gi, "\n")
+								.trim();
+
+							return {
+								...message,
+								content: [
+									texto,
+									"ANÁLISIS VISUAL DE LA IMAGEN (descripción observada):",
+									analisisVisual,
+									"Usa esta descripción como referencia visual. Genera las acciones ejecutables según el contexto real del proyecto."
+								].filter(Boolean).join("\n\n")
+							};
+						});
+
+						console.log("[RobloxAI] Enviando al modelo de VFX solo texto + análisis visual; la imagen no se reenvía en la corrección.");
+						return preguntarOmniRoute(mensajesTextuales, {
+							json: true,
+							reasoningEffort: "none",
+							reasoningFormat: "hidden",
+							temperature: 0.1,
+							timeoutMs: Number(process.env.OMNIROUTE_TIMEOUT_MS || 300000),
+							attemptsPerKey: 2
+						});
 					}
+
 					if (contieneImagen && !OMNIROUTE_VISION_MODEL) {
 						throw new Error(
 							"Hay una imagen adjunta, pero no se ha configurado un modelo visual válido. " +
@@ -2854,6 +2944,7 @@ const CHAT_SYSTEM = [
 							"No añadas el sufijo :free salvo que aparezca literalmente en ese catálogo."
 						);
 					}
+
 					if (contieneImagen) {
 						console.log(`🖼️ Imagen detectada. Usando modelo visual de OmniRoute: ${OMNIROUTE_VISION_MODEL}...`);
 					}
