@@ -1190,13 +1190,13 @@ const CHAT_SYSTEM = [
 							function extraerImagenDelMensaje(mensaje) {
 								const texto = String(mensaje || "");
 								const encontrado =
-								/(?:^|\s)(?:imagen|foto|captura|@img|image)\s*[:=]\s*([^\s,;]+)/i.exec(texto);
+								/(?:^|\s)(?:imagen|foto|captura|@img|image)\s*[:=]\s*(?:"([^"]+)"|'([^']+)'|([^\s,;]+))/i.exec(texto);
 
 								if (!encontrado) {
 									return null;
 								}
 
-								const ruta = String(encontrado[1] || "")
+								const ruta = String(encontrado[1] || encontrado[2] || encontrado[3] || "")
 								.trim()
 								.replace(/^["']/, "")
 								.replace(/["']$/, "");
