@@ -43,6 +43,10 @@ const activeTestJobs = new Map();
 
 const MAX_TEST_CYCLES = 3;
 const MAX_VFX_ACTIONS = 120;
+const OMNIROUTE_VISION_MODEL = String(
+	process.env.OMNIROUTE_VISION_MODEL ||
+	"nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+).trim();
 
 const SCRIPT_CLASSES = new Set([
 	"Script",
@@ -2755,46 +2759,44 @@ const CHAT_SYSTEM = [
 				* ============================================================
 				*/
 
-				async function pedirRespuestaEjecutable(
-					messages,
-					extra = ""
-				) {
-					const finalMessages =
-					extra
-					? [
-					...messages,
-					{
-						role:
-						"user",
-						content:
-						extra
-					}
-					]
-					: messages;
+				async function pedirRespuestaEjecutable(messages, extra = "") {
+					const finalMessages = extra
+						? [
+							...messages,
+							{ role: "user", content: extra }
+						]
+						: messages;
 
-					return preguntarOmniRoute(
-						finalMessages,
-						{
-							json: true,
-							reasoningEffort:
-							"none",
-							reasoningFormat:
-							"hidden",
-							temperature:
-							0.1,
-							timeoutMs:
-							Number(
-								process.env
-								.OMNIROUTE_TIMEOUT_MS ||
-								300000
-							),
-							attemptsPerKey:
-							2
-						}
+					const contieneImagen = finalMessages.some((message) =>
+						Array.isArray(message?.content) &&
+						message.content.some((part) =>
+							part?.type === "image_url" &&
+							typeof part.image_url?.url === "string"
+						)
 					);
+
+					if (contieneImagen) {
+						console.log(
+							`🖼️ Imagen de referencia detectada. Usando modelo visual ${OMNIROUTE_VISION_MODEL}...`
+						);
 					}
 
-					/*
+					return preguntarOmniRoute(finalMessages, {
+						...(contieneImagen ? { model: OMNIROUTE_VISION_MODEL } : {}),
+						// El endpoint gratuito Nano Omni no acepta response_format=json_object.
+						// VFX_SYSTEM exige JSON y parsearRespuestaJson valida la respuesta.
+						json: !contieneImagen,
+						reasoningEffort: "none",
+						reasoningFormat: "hidden",
+						temperature: 0.1,
+						timeoutMs: Number(
+							process.env.OMNIROUTE_TIMEOUT_MS || 300000
+						),
+						attemptsPerKey: 2
+					});
+				}
+
+				/*
 					* ============================================================
 					* CORRECCIÓN AUTOMÁTICA
 					* ============================================================
