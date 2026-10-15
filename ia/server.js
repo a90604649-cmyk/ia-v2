@@ -2819,7 +2819,7 @@ const CHAT_SYSTEM = [
 							const textContent = content
 								.filter((part) => typeof part?.text === "string")
 								.map((part) => part.text)
-								.join("\\n")
+								.join("\n")
 								.trim();
 							if (textContent) return textContent;
 						}
@@ -2886,7 +2886,7 @@ const CHAT_SYSTEM = [
 							const primaryMessage = String(primaryError?.message || primaryError);
 							const isEndpointDegraded =
 								/DEGRADED function cannot be invoked/i.test(primaryMessage) ||
-								/NVIDIA Vision HTTP 5\\d\\d/i.test(primaryMessage) ||
+								/NVIDIA Vision HTTP 5\d\d/i.test(primaryMessage) ||
 								/Failed to generate completions/i.test(primaryMessage);
 							if (!isEndpointDegraded || !NVIDIA_VISION_FALLBACK_MODEL || NVIDIA_VISION_FALLBACK_MODEL === NVIDIA_VISION_MODEL) {
 							throw primaryError;
