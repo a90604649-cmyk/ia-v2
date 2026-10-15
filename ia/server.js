@@ -1761,10 +1761,10 @@ const CHAT_SYSTEM = [
 									// Models may serialize paths as Workspace.Parent.Child;
 									// the bridge uses Workspace/Parent/Child.
 									const normalizePackedPath = (value) => {
-										let route = String(value || "").trim().replaceAll("\\\\", "/");
+										let route = String(value || "").trim().split(String.fromCharCode(92)).join("/");
 										const root = BASES.find((base) => route.startsWith(base + "."));
 										if (root) {
-											route = root + "/" + route.slice(root.length + 1).replace(/\\./g, "/");
+											route = root + "/" + route.slice(root.length + 1).split(".").join("/");
 										}
 										return route;
 										};
