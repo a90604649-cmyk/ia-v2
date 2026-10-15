@@ -61,8 +61,13 @@ const NVIDIA_VISION_MODEL = String(
 
 const NVIDIA_VISION_FALLBACK_MODEL = String(
 	process.env.NVIDIA_VISION_FALLBACK_MODEL ||
-	"meta/llama-3.2-90b-vision-instruct"
+	"meta/llama-3.2-11b-vision-instruct"
 ).trim();
+
+const NVIDIA_VISION_TIMEOUT_MS = Math.max(
+	10000,
+	Number(process.env.NVIDIA_VISION_TIMEOUT_MS || 90000)
+);
 
 const SCRIPT_CLASSES = new Set([
 	"Script",
@@ -2778,7 +2783,7 @@ const CHAT_SYSTEM = [
 				async function preguntarNvidiaVision(messages, model = NVIDIA_VISION_MODEL) {
 					const apiKey = String(process.env.NVIDIA_API_KEY || "").trim();
 					if (!apiKey) throw new Error("No hay NVIDIA_API_KEY configurada.");
-					const timeoutMs = Number(process.env.OMNIROUTE_TIMEOUT_MS || 300000);
+					const timeoutMs = NVIDIA_VISION_TIMEOUT_MS;
 					const controller = new AbortController();
 					const timer = setTimeout(() => controller.abort(), timeoutMs);
 					try {
@@ -2834,6 +2839,11 @@ const CHAT_SYSTEM = [
 						throw new Error(
 							"NVIDIA Vision respondió sin texto final. Detalle seguro: " + JSON.stringify(responseShape)
 						);
+					} catch (error) {
+						if (controller.signal.aborted) {
+							throw new Error(`NVIDIA Vision agotó el tiempo límite de ${timeoutMs} ms para ${model}.`);
+						}
+						throw error;
 					} finally {
 						clearTimeout(timer);
 					}
