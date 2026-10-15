@@ -1738,39 +1738,46 @@ const CHAT_SYSTEM = [
 																	/*
 																	* Detectar acciones extendidas empaquetadas.
 																	*/
-																	const packed =
-																	parsearAccionExtendidaEmpaquetada(
-																		rawAction
-																	);
+																	const packed = parsearAccionExtendidaEmpaquetada(rawAction);
 
-																	if (packed) {
-																		if (
-																			repairMode &&
-																			(
-																				packed.type ===
-																				"create_instance" ||
-																				packed.type ===
-																				"create_script" ||
-																				packed.type ===
-																				"create_local_script" ||
-																				packed.type ===
-																				"create_module_script"
-																			)
-																		) {
-																			console.warn(
-																				"🛑 Creación nueva bloqueada durante reparación:",
-																				JSON.stringify(
-																					packed,
-																					null,
-																					2
-																				)
-																			);
+										if (packed) {
+										if (
+										repairMode &&
+										(
+											packed.type === "create_instance" ||
+											packed.type === "create_script" ||
+											packed.type === "create_local_script" ||
+											packed.type === "create_module_script"
+										)
+									) {
+										console.warn(
+											"🛑 Creación nueva bloqueada durante reparación:",
+											JSON.stringify(packed, null, 2)
+										);
+										return null;
+									}
 
-																			return null;
-																		}
-																		}
+									// Decode the packed VFX operation before normalizing it.
+									// Models may serialize paths as Workspace.Parent.Child;
+									// the bridge uses Workspace/Parent/Child.
+									const normalizePackedPath = (value) => {
+										let route = String(value || "").trim().replaceAll("\\\\", "/");
+										const root = BASES.find((base) => route.startsWith(base + "."));
+										if (root) {
+											route = root + "/" + route.slice(root.length + 1).replace(/\\./g, "/");
+										}
+										return route;
+										};
 
-																		let type =
+									rawAction = { ...packed };
+									if (typeof rawAction.path === "string") {
+										rawAction.path = normalizePackedPath(rawAction.path);
+									}
+									if (typeof rawAction.targetPath === "string") {
+										rawAction.targetPath = normalizePackedPath(rawAction.targetPath);
+									}
+								}
+									let type =
 																		String(
 																			rawAction.type ||
 																			rawAction.operation ||
