@@ -59,6 +59,11 @@ const NVIDIA_VISION_MODEL = String(
 	"nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
 ).trim();
 
+const NVIDIA_VISION_FALLBACK_MODEL = String(
+	process.env.NVIDIA_VISION_FALLBACK_MODEL ||
+	"meta/llama-3.2-90b-vision-instruct"
+).trim();
+
 const SCRIPT_CLASSES = new Set([
 	"Script",
 	"LocalScript",
@@ -2770,13 +2775,25 @@ const CHAT_SYSTEM = [
 				* ============================================================
 				*/
 
-				async function preguntarNvidiaVision(messages) {
+				async function preguntarNvidiaVision(messages, model = NVIDIA_VISION_MODEL) {
 					const apiKey = String(process.env.NVIDIA_API_KEY || "").trim();
 					if (!apiKey) throw new Error("No hay NVIDIA_API_KEY configurada.");
 					const timeoutMs = Number(process.env.OMNIROUTE_TIMEOUT_MS || 300000);
 					const controller = new AbortController();
 					const timer = setTimeout(() => controller.abort(), timeoutMs);
 					try {
+						const body = {
+							model,
+							messages,
+							temperature: 0.1,
+							max_tokens: 1200,
+							stream: false
+						};
+						// This model-specific option is only sent to Nemotron Omni.
+						if (/nemotron-3-nano-omni/i.test(model)) {
+							body.chat_template_kwargs = { enable_thinking: false };
+						}
+
 						const response = await fetch(NVIDIA_VISION_URL, {
 							method: "POST",
 							headers: {
@@ -2784,17 +2801,7 @@ const CHAT_SYSTEM = [
 								"Content-Type": "application/json",
 								Accept: "application/json"
 							},
-							body: JSON.stringify({
-								model: NVIDIA_VISION_MODEL,
-								messages,
-								temperature: 0.1,
-								max_tokens: 1200,
-								// VFX creation needs a final JSON, not a long reasoning trace.
-								chat_template_kwargs: {
-									enable_thinking: false
-								},
-								stream: false
-							}),
+							body: JSON.stringify(body),
 							signal: controller.signal
 						});
 						const raw = await response.text();
@@ -2812,7 +2819,7 @@ const CHAT_SYSTEM = [
 							const textContent = content
 								.filter((part) => typeof part?.text === "string")
 								.map((part) => part.text)
-								.join("\n")
+								.join("\\n")
 								.trim();
 							if (textContent) return textContent;
 						}
@@ -2825,8 +2832,7 @@ const CHAT_SYSTEM = [
 						};
 						console.error("[RobloxAI] NVIDIA Vision no devolvió respuesta final:", JSON.stringify(responseShape));
 						throw new Error(
-							"NVIDIA Vision respondió sin texto final. Se desactivó el razonamiento y se amplió max_tokens; " +
-							"reintenta. Detalle seguro: " + JSON.stringify(responseShape)
+							"NVIDIA Vision respondió sin texto final. Detalle seguro: " + JSON.stringify(responseShape)
 						);
 					} finally {
 						clearTimeout(timer);
@@ -2849,7 +2855,7 @@ const CHAT_SYSTEM = [
 
 					const analysisPromise = (async () => {
 						console.log("[RobloxAI] Analizando la referencia visual de forma compacta...");
-						const analysis = await preguntarNvidiaVision([
+						const visualMessages = [
 							{
 								role: "system",
 								content: [
@@ -2871,7 +2877,31 @@ const CHAT_SYSTEM = [
 									imagePart
 								]
 							}
-						]);
+						];
+
+						let analysis;
+						try {
+							analysis = await preguntarNvidiaVision(visualMessages, NVIDIA_VISION_MODEL);
+						} catch (primaryError) {
+							const primaryMessage = String(primaryError?.message || primaryError);
+							const isEndpointDegraded =
+								/DEGRADED function cannot be invoked/i.test(primaryMessage) ||
+								/NVIDIA Vision HTTP 5\\d\\d/i.test(primaryMessage) ||
+								/Failed to generate completions/i.test(primaryMessage);
+							if (!isEndpointDegraded || !NVIDIA_VISION_FALLBACK_MODEL || NVIDIA_VISION_FALLBACK_MODEL === NVIDIA_VISION_MODEL) {
+							throw primaryError;
+							}
+							console.warn(
+								`[RobloxAI] Modelo visual principal no disponible; probando alternativa ${NVIDIA_VISION_FALLBACK_MODEL}...`
+							);
+							try {
+								analysis = await preguntarNvidiaVision(visualMessages, NVIDIA_VISION_FALLBACK_MODEL);
+							} catch (fallbackError) {
+								throw new Error(
+									`Fallaron ambos modelos visuales. Principal: ${primaryMessage}. Alternativa: ${String(fallbackError?.message || fallbackError)}`
+								);
+							}
+						}
 
 						const cleanAnalysis = String(analysis || "").trim();
 						if (!cleanAnalysis) {
