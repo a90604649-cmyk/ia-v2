@@ -43,9 +43,19 @@ const activeTestJobs = new Map();
 
 const MAX_TEST_CYCLES = 3;
 const MAX_VFX_ACTIONS = 120;
+// Empty by default: a vision model must exist in the user's OmniRoute catalog.
 const OMNIROUTE_VISION_MODEL = String(
-	process.env.OMNIROUTE_VISION_MODEL ||
-	"nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+	process.env.OMNIROUTE_VISION_MODEL || ""
+).trim();
+
+const NVIDIA_VISION_URL = String(
+	process.env.NVIDIA_VISION_URL ||
+	"https://integrate.api.nvidia.com/v1/chat/completions"
+).trim();
+
+const NVIDIA_VISION_MODEL = String(
+	process.env.NVIDIA_VISION_MODEL ||
+	"nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
 ).trim();
 
 const SCRIPT_CLASSES = new Set([
@@ -2759,39 +2769,86 @@ const CHAT_SYSTEM = [
 				* ============================================================
 				*/
 
+				async function preguntarNvidiaVision(messages) {
+					const apiKey = String(process.env.NVIDIA_API_KEY || "").trim();
+					if (!apiKey) throw new Error("No hay NVIDIA_API_KEY configurada.");
+					const timeoutMs = Number(process.env.OMNIROUTE_TIMEOUT_MS || 300000);
+					const controller = new AbortController();
+					const timer = setTimeout(() => controller.abort(), timeoutMs);
+					try {
+						const response = await fetch(NVIDIA_VISION_URL, {
+							method: "POST",
+							headers: {
+								Authorization: `Bearer ${apiKey}`,
+								"Content-Type": "application/json",
+								Accept: "application/json"
+							},
+							body: JSON.stringify({
+								model: NVIDIA_VISION_MODEL,
+								messages,
+								temperature: 0.1,
+								max_tokens: 8192,
+								stream: false
+							}),
+							signal: controller.signal
+						});
+						const raw = await response.text();
+						let data;
+						try { data = raw ? JSON.parse(raw) : null; } catch { data = null; }
+						if (!response.ok) {
+							const detail = String(
+								data?.detail || data?.message || data?.error?.message || raw || "sin detalles"
+							).slice(0, 900);
+							throw new Error(`NVIDIA Vision HTTP ${response.status}: ${detail}`);
+						}
+						const content = data?.choices?.[0]?.message?.content;
+						if (typeof content === "string" && content.trim()) return content;
+						if (Array.isArray(content)) {
+							const textContent = content
+								.filter((part) => typeof part?.text === "string")
+								.map((part) => part.text)
+								.join("\n")
+								.trim();
+							if (textContent) return textContent;
+						}
+						throw new Error("NVIDIA Vision respondió sin texto en choices[0].message.content.");
+					} finally {
+						clearTimeout(timer);
+					}
+				}
+
 				async function pedirRespuestaEjecutable(messages, extra = "") {
 					const finalMessages = extra
-						? [
-							...messages,
-							{ role: "user", content: extra }
-						]
+						? [...messages, { role: "user", content: extra }]
 						: messages;
-
 					const contieneImagen = finalMessages.some((message) =>
 						Array.isArray(message?.content) &&
 						message.content.some((part) =>
-							part?.type === "image_url" &&
-							typeof part.image_url?.url === "string"
+							part?.type === "image_url" && typeof part.image_url?.url === "string"
 						)
 					);
-
-					if (contieneImagen) {
-						console.log(
-							`🖼️ Imagen de referencia detectada. Usando modelo visual ${OMNIROUTE_VISION_MODEL}...`
+					if (contieneImagen && process.env.NVIDIA_API_KEY?.trim()) {
+						console.log(`🖼️ Imagen detectada. Enviando a la API visual directa de NVIDIA: ${NVIDIA_VISION_MODEL}...`);
+						return preguntarNvidiaVision(finalMessages);
+					}
+					if (contieneImagen && !OMNIROUTE_VISION_MODEL) {
+						throw new Error(
+							"Hay una imagen adjunta, pero no se ha configurado un modelo visual válido. " +
+							"Configura NVIDIA_API_KEY para usar la API visual directa de NVIDIA, o configura OMNIROUTE_VISION_MODEL " +
+							"con el ID exacto de un modelo con entrada de imagen que aparezca en http://127.0.0.1:20128/v1/models. " +
+							"No añadas el sufijo :free salvo que aparezca literalmente en ese catálogo."
 						);
 					}
-
+					if (contieneImagen) {
+						console.log(`🖼️ Imagen detectada. Usando modelo visual de OmniRoute: ${OMNIROUTE_VISION_MODEL}...`);
+					}
 					return preguntarOmniRoute(finalMessages, {
 						...(contieneImagen ? { model: OMNIROUTE_VISION_MODEL } : {}),
-						// El endpoint gratuito Nano Omni no acepta response_format=json_object.
-						// VFX_SYSTEM exige JSON y parsearRespuestaJson valida la respuesta.
 						json: !contieneImagen,
 						reasoningEffort: "none",
 						reasoningFormat: "hidden",
 						temperature: 0.1,
-						timeoutMs: Number(
-							process.env.OMNIROUTE_TIMEOUT_MS || 300000
-						),
+						timeoutMs: Number(process.env.OMNIROUTE_TIMEOUT_MS || 300000),
 						attemptsPerKey: 2
 					});
 				}
