@@ -2787,7 +2787,11 @@ const CHAT_SYSTEM = [
 								model: NVIDIA_VISION_MODEL,
 								messages,
 								temperature: 0.1,
-								max_tokens: 8192,
+								max_tokens: 16384,
+								// VFX creation needs a final JSON, not a long reasoning trace.
+								chat_template_kwargs: {
+									enable_thinking: false
+								},
 								stream: false
 							}),
 							signal: controller.signal
@@ -2811,7 +2815,18 @@ const CHAT_SYSTEM = [
 								.trim();
 							if (textContent) return textContent;
 						}
-						throw new Error("NVIDIA Vision respondió sin texto en choices[0].message.content.");
+						const firstChoice = data?.choices?.[0];
+						const message = firstChoice?.message;
+						const responseShape = {
+							finish_reason: firstChoice?.finish_reason ?? null,
+							message_fields: message && typeof message === "object" ? Object.keys(message) : [],
+							has_reasoning: Boolean(message?.reasoning || message?.reasoning_content)
+						};
+						console.error("[RobloxAI] NVIDIA Vision no devolvió respuesta final:", JSON.stringify(responseShape));
+						throw new Error(
+							"NVIDIA Vision respondió sin texto final. Se desactivó el razonamiento y se amplió max_tokens; " +
+							"reintenta. Detalle seguro: " + JSON.stringify(responseShape)
+						);
 					} finally {
 						clearTimeout(timer);
 					}
