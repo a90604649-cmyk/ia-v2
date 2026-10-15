@@ -2783,7 +2783,14 @@ const CHAT_SYSTEM = [
 				async function preguntarNvidiaVision(messages, model = NVIDIA_VISION_MODEL) {
 					const apiKey = String(process.env.NVIDIA_API_KEY || "").trim();
 					if (!apiKey) throw new Error("No hay NVIDIA_API_KEY configurada.");
-					const timeoutMs = NVIDIA_VISION_TIMEOUT_MS;
+					const primaryNemotronTimeoutMs = Math.max(
+						10000,
+						Number(process.env.NVIDIA_VISION_PRIMARY_TIMEOUT_MS || 25000)
+					);
+					const timeoutMs =
+						model === NVIDIA_VISION_MODEL && /nemotron-3-nano-omni/i.test(model)
+							? Math.min(NVIDIA_VISION_TIMEOUT_MS, primaryNemotronTimeoutMs)
+							: NVIDIA_VISION_TIMEOUT_MS;
 					const controller = new AbortController();
 					const timer = setTimeout(() => controller.abort(), timeoutMs);
 					try {
