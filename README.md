@@ -32,6 +32,7 @@ Desde la carpeta `ia/`, copia `.env.example` como `.env` (en Windows PowerShell:
 OMNIROUTE_API_KEY=tu_clave_de_omniroute
 OMNIROUTE_URL=http://127.0.0.1:20128/v1/chat/completions
 OMNIROUTE_MODEL=nvidia/nvidia/nemotron-3-ultra-550b-a55b
+OMNIROUTE_VISION_MODEL=nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
 OMNIROUTE_TIMEOUT_MS=300000
 OMNIROUTE_REASONING_EFFORT=none
 
@@ -41,7 +42,7 @@ PROJECT_CONTEXT_HOST=0.0.0.0
 BRIDGE_INPUT_PORT=3030
 ```
 
-La clave se guarda solo en `.env`. No la pegues en el código ni la subas a GitHub. `OMNIROUTE_API_KEY` debe seguir siendo la clave local de OmniRoute; la credencial de NVIDIA se configura dentro de OmniRoute. El modelo de ejemplo es `nvidia/nvidia/nemotron-3-ultra-550b-a55b`, que debe aparecer disponible en el catálogo de tu instancia. El bridge no fija `max_tokens`; OmniRoute y el proveedor aplican sus cuotas propias. Para errores de cola con `reset after Ns`, el bridge reintenta hasta tres intentos y espera el intervalo indicado más un segundo. Esto mejora el reintento, pero no evita que un proveedor saturado siga fallando. Si ya tienes un `.env` creado, editar `.env.example` no lo modifica: abre `ia/.env` y cambia manualmente la línea `OMNIROUTE_MODEL` a `nvidia/nvidia/nemotron-3-ultra-550b-a55b`. Conserva `OMNIROUTE_API_KEY` como tu clave local de OmniRoute.
+La clave se guarda solo en `.env`. No la pegues en el código ni la subas a GitHub. `OMNIROUTE_MODEL` sigue siendo el modelo de texto para las solicitudes normales. Cuando se adjunta una imagen, el bridge selecciona `OMNIROUTE_VISION_MODEL`, configurado por defecto como `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free`, que admite imágenes. Si ese modelo no aparece en tu catálogo de OmniRoute, sustitúyelo por uno multimodal disponible en tu instancia. La ventana de peticiones también normaliza saltos de línea para que el marcador `@img` no se convierta en una segunda solicitud. `OMNIROUTE_API_KEY` debe seguir siendo la clave local de OmniRoute; la credencial de NVIDIA se configura dentro de OmniRoute. El modelo de ejemplo es `nvidia/nvidia/nemotron-3-ultra-550b-a55b`, que debe aparecer disponible en el catálogo de tu instancia. El bridge no fija `max_tokens`; OmniRoute y el proveedor aplican sus cuotas propias. Para errores de cola con `reset after Ns`, el bridge reintenta hasta tres intentos y espera el intervalo indicado más un segundo. Esto mejora el reintento, pero no evita que un proveedor saturado siga fallando. Si ya tienes un `.env` creado, editar `.env.example` no lo modifica: abre `ia/.env` y cambia manualmente la línea `OMNIROUTE_MODEL` a `nvidia/nvidia/nemotron-3-ultra-550b-a55b`. Conserva `OMNIROUTE_API_KEY` como tu clave local de OmniRoute.
 
 ## Ejecución
 
