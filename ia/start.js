@@ -59,6 +59,7 @@ function iniciar(nombre, archivo, reintento = 0) {
 
 		function enviarPeticionAlBridge(mensaje) {
 			const texto = String(mensaje || "").trim();
+			const linea = texto.replace(/\r\n?/g, "\n").replace(/\n+/g, " ").trim();
 
 			if (!texto) {
 				return { ok: false, status: 400, error: "La petición está vacía." };
@@ -69,7 +70,7 @@ function iniciar(nombre, archivo, reintento = 0) {
 					}
 
 					try {
-						robloxAiProcess.stdin.write(`${texto}\n`);
+						robloxAiProcess.stdin.write(`${linea}\n`);
 						console.log(`📝 Petición recibida desde la ventana: ${texto}`);
 						return { ok: true, status: 200 };
 					} catch (error) {
