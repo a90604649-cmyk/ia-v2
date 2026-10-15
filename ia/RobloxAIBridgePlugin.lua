@@ -1,8 +1,11 @@
 local HttpService = game:GetService("HttpService")
+local AssetService = game:GetService("AssetService")
+local InsertService = game:GetService("InsertService")
 local ScriptEditorService = game:GetService("ScriptEditorService")
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local StudioTestService = game:GetService("StudioTestService")
 local LogService = game:GetService("LogService")
+local CaptureService = game:GetService("CaptureService")
 
 local BASE_URL = "http://127.0.0.1:3000"
 local NEXT_URL = BASE_URL .. "/next"
@@ -10,8 +13,13 @@ local HEALTH_URL = BASE_URL .. "/health"
 local PROJECT_SCAN_URL = "http://127.0.0.1:3001/project-scan"
 local TEST_RESULTS_URL = BASE_URL .. "/test-results"
 local EXECUTION_RESULTS_URL = BASE_URL .. "/execution-results"
+local TEXTURE_CATALOG_URL = BASE_URL .. "/texture-catalog"
+local TEXTURE_VALIDATION_URL = BASE_URL .. "/texture-validation"
+local VISUAL_CAPTURE_URL = BASE_URL .. "/visual-capture"
 
 local INTERVALO_ESCANEO = 300
+local CAPTURA_ANCHO_MAX = 256
+local MAX_ESPERA_CAPTURA = 12
 local MAX_SOURCE_CHARS = 340000
 local MAX_BATCH_CHARS = 700000
 local MAX_SCRIPTS_PER_BATCH = 25
@@ -29,6 +37,10 @@ local conectado = false
 local consultando = false
 local escaneando = false
 local ultimoEscaneo = 0
+
+-- Declaradas mas abajo, despues de las validaciones de textura.
+local recolectarTexturas
+local enviarCatalogoTexturas
 
 local SERVICIOS = {
 	ReplicatedStorage = game:GetService("ReplicatedStorage"),
@@ -82,7 +94,9 @@ local VFX_ACTION_TYPES = {
 	set_properties = true,
 	rename_instance = true,
 	move_instance = true,
-	delete_instance = true
+	delete_instance = true,
+	verify_textures = true,
+	insertar_modelo = true
 }
 
 local function raizVFXPermitida(ruta)
@@ -272,6 +286,113 @@ local function recolectarScripts()
 	return resultado
 end
 
+-- Que propiedades describen la APARIENCIA de cada clase.
+-- Es conocimiento general de Roblox (que propiedad dibuja que), no una receta de un efecto concreto.
+local PROPIEDADES_VISUALES = {
+	BasePart = {"Size", "Color", "Transparency", "Material", "Anchored", "Shape", "CanCollide"},
+	Decal = {"Texture", "Face", "Color3", "Transparency", "ZIndex"},
+	Texture = {"Texture", "Face", "Color3", "Transparency", "StudsPerTileU", "StudsPerTileV"},
+	ParticleEmitter = {"Texture", "Color", "Size", "Transparency", "Rate", "Speed", "Lifetime", "LightEmission", "LightInfluence", "Rotation", "EmissionDirection", "Acceleration"},
+	PointLight = {"Color", "Brightness", "Range", "Shadows"},
+	SpotLight = {"Color", "Brightness", "Range", "Angle", "Face"},
+	SurfaceLight = {"Color", "Brightness", "Range", "Angle", "Face"},
+	Beam = {"Color", "Texture", "Width0", "Width1", "Segments", "FaceCamera"},
+	Trail = {"Color", "Texture", "WidthScale", "Lifetime", "FaceCamera"},
+	Fire = {"Color", "SecondaryColor", "Size", "Heat"},
+	Smoke = {"Color", "Size", "Opacity", "RiseVelocity"},
+	Sparkles = {"Color", "SparkleColor", "TimeScale"},
+	SpecialMesh = {"MeshType", "Scale", "Offset", "TextureId"},
+	BlockMesh = {"Scale", "Offset"},
+	CylinderMesh = {"Scale", "Offset"},
+	Highlight = {"FillColor", "OutlineColor", "FillTransparency", "OutlineTransparency"},
+	Attachment = {"Position"},
+	BillboardGui = {"Size", "StudsOffset", "AlwaysOnTop"},
+	SurfaceGui = {"Face", "LightInfluence", "AlwaysOnTop"},
+	ImageLabel = {"Image", "ImageColor3", "ImageTransparency"},
+	ImageButton = {"Image", "ImageColor3", "ImageTransparency"},
+	UIGradient = {"Color", "Rotation", "Transparency"}
+}
+
+local function formatearPropiedad(valor)
+	local tipo = typeof(valor)
+	if tipo == "Vector3" then
+		return string.format("%.2f,%.2f,%.2f", valor.X, valor.Y, valor.Z)
+	elseif tipo == "Vector2" then
+		return string.format("%.2f,%.2f", valor.X, valor.Y)
+	elseif tipo == "Color3" then
+		return string.format(
+			"#%02X%02X%02X",
+			math.floor(valor.R * 255 + 0.5),
+			math.floor(valor.G * 255 + 0.5),
+			math.floor(valor.B * 255 + 0.5)
+		)
+	elseif tipo == "UDim2" then
+		return string.format(
+			"%.3f,%.1f,%.3f,%.1f",
+			valor.X.Scale, valor.X.Offset, valor.Y.Scale, valor.Y.Offset
+		)
+	elseif tipo == "NumberRange" then
+		return string.format("%.2f..%.2f", valor.Min, valor.Max)
+	elseif tipo == "CFrame" then
+		local p = valor.Position
+		return string.format("%.2f,%.2f,%.2f", p.X, p.Y, p.Z)
+	elseif tipo == "number" then
+		return string.format("%.3f", valor)
+	elseif tipo == "boolean" or tipo == "EnumItem" then
+		return tostring(valor)
+	elseif tipo == "string" then
+		if #valor > 140 then
+			return string.sub(valor, 1, 140) .. "..."
+		end
+		return valor
+	elseif tipo == "NumberSequence" then
+		local minimo, maximo
+		for _, punto in ipairs(valor.Keypoints) do
+			local v = punto.Value
+			minimo = minimo and math.min(minimo, v) or v
+			maximo = maximo and math.max(maximo, v) or v
+		end
+		return string.format("%d keypoints %.2f..%.2f", #valor.Keypoints, minimo or 0, maximo or 0)
+	elseif tipo == "ColorSequence" then
+		return string.format("%d keypoints", #valor.Keypoints)
+	end
+	return nil
+end
+
+-- Devuelve una descripcion textual de COMO SE VE la instancia (no de como se llama).
+local function describirEstructura(objeto)
+	local nombres = PROPIEDADES_VISUALES[objeto.ClassName]
+	if not nombres and objeto:IsA("BasePart") then
+		nombres = PROPIEDADES_VISUALES.BasePart
+	end
+	if not nombres then
+		return nil
+	end
+
+	local partes = {}
+	for _, nombre in ipairs(nombres) do
+		local ok, valor = pcall(function()
+			return objeto[nombre]
+		end)
+		if ok and valor ~= nil then
+			local texto = formatearPropiedad(valor)
+			if texto and texto ~= "" then
+				table.insert(partes, nombre .. "=" .. texto)
+			end
+		end
+	end
+
+	if #partes == 0 then
+		return nil
+	end
+
+	local descripcion = table.concat(partes, " ")
+	if #descripcion > 420 then
+		descripcion = string.sub(descripcion, 1, 420)
+	end
+	return descripcion
+end
+
 local function recolectarObjetos()
 	local resultado = {}
 
@@ -287,7 +408,8 @@ local function recolectarObjetos()
 					table.insert(resultado, {
 						className = objeto.ClassName,
 						name = objeto.Name,
-						path = ruta
+						path = ruta,
+						estructura = describirEstructura(objeto)
 					})
 				end
 			end
@@ -381,6 +503,7 @@ local function escanearProyecto()
 	if correcto then
 		ultimoEscaneo = os.clock()
 		print("[Roblox AI] ✅ Contexto actualizado:", #scripts, "scripts |", #objects, "objetos detectados")
+		enviarCatalogoTexturas()
 	end
 
 	escaneando = false
@@ -501,7 +624,13 @@ local function convertirValor(valor)
 		end
 		return ColorSequence.new(keypoints)
 	elseif tipo == "Enum" then
-		local enumObjeto = Enum[tostring(valor.enum or "")]
+		local nombreEnum = tostring(valor.enum or "")
+		-- EmissionDirection es un NormalId, no un enum propio: el modelo suele inventarse el nombre.
+		if nombreEnum == "EmissionDirection" then
+			nombreEnum = "NormalId"
+		end
+
+		local enumObjeto = Enum[nombreEnum]
 		if enumObjeto then
 			local enumItem = enumObjeto[tostring(valor.value or "")]
 			if enumItem then
@@ -739,11 +868,564 @@ local function ejecutarCarpeta(action)
 	return false
 end
 
+-- ============================================================
+-- VALIDACION VISUAL: texturas y jerarquia
+-- ============================================================
+
+local ContentProvider = game:GetService("ContentProvider")
+
+-- Estas clases solo emiten si cuelgan de una BasePart o un Attachment.
+local CLASES_EMISORAS = {
+	ParticleEmitter = true,
+	Beam = true,
+	Trail = true,
+	Fire = true,
+	Smoke = true,
+	Sparkles = true
+}
+
+-- Estas luces solo iluminan si cuelgan de una BasePart o un Attachment.
+local CLASES_LUZ = {
+	PointLight = true,
+	SpotLight = true,
+	SurfaceLight = true
+}
+
+-- Clase -> propiedad que guarda su textura o imagen.
+local PROPIEDAD_TEXTURA = {
+	ParticleEmitter = "Texture",
+	Beam = "Texture",
+	Trail = "Texture",
+	Decal = "Texture",
+	Texture = "Texture",
+	ImageLabel = "Image",
+	ImageButton = "Image"
+}
+
+-- Sin textura, estas clases no dibujan absolutamente nada.
+local TEXTURA_OBLIGATORIA = {
+	ParticleEmitter = true
+}
+
+local TEXTURAS_SEGURAS = "rbxasset://textures/particles/fire_main.dds, rbxasset://textures/particles/smoke_main.dds o rbxasset://textures/particles/sparkles_main.dds"
+
+local cacheTexturas = {}
+
+local function texturaCarga(id)
+	if type(id) ~= "string" or id == "" then
+		return false
+	end
+
+	local cacheado = cacheTexturas[id]
+	if cacheado ~= nil then
+		return cacheado
+	end
+
+	local sonda = Instance.new("Decal")
+	sonda.Texture = id
+
+	local estado = "sin respuesta"
+	local ok = pcall(function()
+		ContentProvider:PreloadAsync({sonda}, function(_, status)
+			estado = tostring(status)
+		end)
+	end)
+
+	sonda:Destroy()
+
+	local valida = ok and estado == "Enum.AssetFetchStatus.Success"
+	cacheTexturas[id] = valida
+
+	if not valida then
+		warn("[Roblox AI] Textura que no carga:", id, "->", estado)
+	end
+
+	return valida
+end
+
+local function texturaPermitida(className, propiedad, valor)
+	local esperada = PROPIEDAD_TEXTURA[className]
+	if not esperada or propiedad ~= esperada then
+		return true
+	end
+
+	local convertido = convertirValor(valor)
+
+	if type(convertido) ~= "string" or convertido == "" then
+		if TEXTURA_OBLIGATORIA[className] then
+			warn("[Roblox AI] RECHAZADO: " .. className .. " sin " .. esperada .. " no dibuja nada. Usa " .. TEXTURAS_SEGURAS)
+			return false
+		end
+		return true
+	end
+
+	if not texturaCarga(convertido) then
+		warn("[Roblox AI] RECHAZADO: la textura no existe o no carga:", convertido)
+		warn("[Roblox AI] Usa una textura real de ReplicatedStorage/VFXTextures, una que ya exista en el proyecto, o " .. TEXTURAS_SEGURAS)
+		return false
+	end
+
+	return true
+end
+
+-- Sin scripts que disparen Emit(), un emisor con Rate 0 nunca emite nada.
+local function ratePermitido(className, propiedad, valor)
+	if className ~= "ParticleEmitter" or propiedad ~= "Rate" or valor == nil then
+		return true
+	end
+
+	local convertido = tonumber(convertirValor(valor))
+
+	if convertido and convertido <= 0 then
+		warn("[Roblox AI] RECHAZADO: ParticleEmitter con Rate = 0 nunca emite y el VFX queda invisible. Pon un Rate mayor que 0.")
+		return false
+	end
+
+	return true
+end
+
+local function propiedadesVisualesValidas(className, propiedades)
+	if type(propiedades) ~= "table" then
+		return true
+	end
+
+	if not ratePermitido(className, "Rate", propiedades.Rate) then
+		return false
+	end
+
+	local esperada = PROPIEDAD_TEXTURA[className]
+	if not esperada then
+		return true
+	end
+
+	local valor = propiedades[esperada]
+
+	if valor == nil then
+		if TEXTURA_OBLIGATORIA[className] then
+			warn("[Roblox AI] RECHAZADO: create_instance de " .. className .. " sin " .. esperada .. ". Usa " .. TEXTURAS_SEGURAS)
+			return false
+		end
+		return true
+	end
+
+	return texturaPermitida(className, esperada, valor)
+end
+
+local function padreVisualValido(className, padre)
+	if not (CLASES_EMISORAS[className] or CLASES_LUZ[className]) then
+		return true
+	end
+
+	if padre and (padre:IsA("BasePart") or padre:IsA("Attachment")) then
+		return true
+	end
+
+	warn("[Roblox AI] RECHAZADO: " .. className .. " debe ser hijo directo de una BasePart o un Attachment. Dentro de " ..
+		(padre and ("un " .. padre.ClassName) or "ese contenedor") .. " no emite ni ilumina.")
+
+	return false
+end
+
+-- ============================================================
+-- CATALOGO DE TEXTURAS: descubre las texturas que ya existen en el proyecto
+-- ============================================================
+
+local CLASES_CON_TEXTURA = {
+	ParticleEmitter = "Texture",
+	Beam = "Texture",
+	Trail = "Texture",
+	Decal = "Texture",
+	Texture = "Texture",
+	ImageLabel = "Image",
+	ImageButton = "Image"
+}
+
+-- "rbxassetid://123" o "123" -> "rbxassetid://123". Si no es un id, devuelve nil.
+local function idTexturaNormalizado(valor)
+	if type(valor) ~= "string" then
+		return nil
+	end
+
+	local limpio = string.match(valor, "rbxassetid://(%d+)") or string.match(valor, "^%s*(%d+)%s*$")
+	if not limpio then
+		return nil
+	end
+
+	return "rbxassetid://" .. limpio
+end
+
+recolectarTexturas = function()
+	local vistas = {}
+	local catalogo = {}
+
+	local function agregar(instancia, valor, categoriaPorDefecto)
+		local id = idTexturaNormalizado(valor)
+		if not id or vistas[id] then
+			return
+		end
+		vistas[id] = true
+
+		local categoria = categoriaPorDefecto
+		local actual = instancia.Parent
+		while actual and not actual:IsA("DataModel") do
+			if actual:IsA("Folder") or actual:IsA("Model") then
+				categoria = actual.Name
+				break
+			end
+			actual = actual.Parent
+		end
+
+		table.insert(catalogo, {
+			id = id,
+			categoria = categoria or "General",
+			origen = instancia:GetFullName()
+		})
+	end
+
+	for nombreRaiz in pairs(VFX_ROOTS) do
+		local raiz = SERVICIOS[nombreRaiz]
+		if raiz then
+			for _, descendiente in ipairs(raiz:GetDescendants()) do
+				local propiedad = CLASES_CON_TEXTURA[descendiente.ClassName]
+				if propiedad then
+					local ok, valor = pcall(function()
+						return descendiente[propiedad]
+					end)
+					if ok then
+						agregar(descendiente, valor, "Proyecto")
+					end
+				end
+			end
+		end
+	end
+
+	table.sort(catalogo, function(a, b)
+		if a.categoria == b.categoria then
+			return a.id < b.id
+		end
+		return a.categoria < b.categoria
+	end)
+
+	return catalogo
+end
+
+enviarCatalogoTexturas = function()
+	local catalogo = recolectarTexturas()
+
+	-- Una textura que ya falló al cargar en esta sesión no se ofrece al modelo:
+	-- el bridge la rechazaría y el emisor entero se perdería.
+	local utiles = {}
+	for _, entrada in ipairs(catalogo) do
+		local numerico = string.match(entrada.id, "(%d+)$")
+		local muerta = cacheTexturas[entrada.id] == false
+			or (numerico ~= nil and cacheTexturas[numerico] == false)
+		if not muerta then
+			table.insert(utiles, entrada)
+		end
+	end
+
+	local ok, response = pcall(function()
+		return HttpService:RequestAsync({
+			Url = TEXTURE_CATALOG_URL,
+			Method = "POST",
+			Headers = {
+				["Content-Type"] = "application/json",
+				["Accept"] = "application/json"
+			},
+			Body = HttpService:JSONEncode({
+				textures = utiles,
+				total = #utiles
+			})
+		})
+	end)
+
+	if not ok or not response.Success then
+		warn("[Roblox AI] No se pudo enviar el catálogo de texturas:", ok and response.Body or response)
+		return false
+	end
+
+	if #catalogo - #utiles > 0 then
+		warn("[Roblox AI] Excluidas del catálogo " .. (#catalogo - #utiles) .. " textura(s) que no cargan en Studio")
+	end
+
+	print("[Roblox AI] 🎨 Catálogo de texturas enviado:", #utiles, "texturas")
+	return true
+end
+
+local function ejecutarVerificacionTexturas(action)
+	local entradas = action.textures or action.ids
+	if type(entradas) ~= "table" then
+		warn("[Roblox AI] verify_textures sin lista de texturas.")
+		return false
+	end
+
+	local conocidas = {}
+	for _, entrada in ipairs(recolectarTexturas()) do
+		conocidas[entrada.id] = true
+	end
+
+	local orden = {}
+	local categoriaDe = {}
+	local estadoDe = {}
+	local sondas = {}
+
+	for _, entrada in ipairs(entradas) do
+		local bruto
+		local categoria = ""
+
+		if type(entrada) == "string" then
+			bruto = entrada
+		elseif type(entrada) == "table" then
+			bruto = entrada.id or entrada.texture
+			categoria = tostring(entrada.categoria or entrada.category or "")
+		end
+
+		local id = idTexturaNormalizado(bruto)
+		if not id and type(bruto) == "string" and bruto ~= "" then
+			id = bruto
+		end
+
+		if id and estadoDe[id] == nil then
+			local cacheado = cacheTexturas[id]
+			if cacheado == nil then
+				estadoDe[id] = "sin respuesta"
+			elseif cacheado then
+				estadoDe[id] = "Enum.AssetFetchStatus.Success"
+			else
+				estadoDe[id] = "Enum.AssetFetchStatus.Failure"
+			end
+
+			categoriaDe[id] = categoria
+			table.insert(orden, id)
+		end
+	end
+
+	local pendientes = {}
+	for _, id in ipairs(orden) do
+		if estadoDe[id] == "sin respuesta" then
+			table.insert(pendientes, id)
+		end
+	end
+
+	if #pendientes > 0 then
+		local carpeta = Instance.new("Folder")
+		carpeta.Name = "RobloxAIBridgePluginSondas"
+		carpeta.Parent = workspace
+
+		local placa = Instance.new("Part")
+		placa.Name = "SondaTexturas"
+		placa.Anchored = true
+		placa.CanCollide = false
+		placa.CanQuery = false
+		placa.CanTouch = false
+		placa.Transparency = 1
+		placa.Size = Vector3.new(1, 1, 1)
+		placa.CFrame = CFrame.new(0, 5000, 0)
+		placa.Parent = carpeta
+
+		for indice, id in ipairs(pendientes) do
+			local sonda = Instance.new("Decal")
+			sonda.Name = "Sonda" .. tostring(indice)
+			sonda.Texture = id
+			sonda.Parent = placa
+			sondas[id] = sonda
+		end
+
+		-- Una sola tanda: sondear textura por textura era demasiado lento
+		-- y el servidor se rendía antes de recibir el resultado.
+		local okPreload = pcall(function()
+			ContentProvider:PreloadAsync({placa}, function(contenido, status)
+				local clave = idTexturaNormalizado(contenido)
+				if clave and estadoDe[clave] == "sin respuesta" then
+					estadoDe[clave] = tostring(status)
+				end
+			end)
+		end)
+
+		if not okPreload then
+			warn("[Roblox AI] PreloadAsync en tanda falló; quedan texturas sin verificar.")
+		end
+
+		-- Red de seguridad: si la tanda no identificó alguna textura, se sondea sola.
+		local restantes = 0
+		for _, id in ipairs(pendientes) do
+			if estadoDe[id] == "sin respuesta" and restantes < 6 then
+				restantes += 1
+				local estado = "sin respuesta"
+				pcall(function()
+					ContentProvider:PreloadAsync({sondas[id]}, function(_, status)
+						estado = tostring(status)
+					end)
+				end)
+				estadoDe[id] = estado
+			end
+		end
+
+		carpeta:Destroy()
+	end
+
+	local resultados = {}
+	for _, id in ipairs(orden) do
+		local estado = estadoDe[id] or "sin respuesta"
+		local valida = estado == "Enum.AssetFetchStatus.Success"
+		cacheTexturas[id] = valida
+		if not valida then
+			warn("[Roblox AI] Textura que no carga:", id, "->", estado)
+		end
+		table.insert(resultados, {
+			id = id,
+			categoria = categoriaDe[id] or "",
+			carga = valida,
+			existeEnProyecto = conocidas[id] == true
+		})
+	end
+
+	local ok, response = pcall(function()
+		return HttpService:RequestAsync({
+			Url = TEXTURE_VALIDATION_URL,
+			Method = "POST",
+			Headers = {
+				["Content-Type"] = "application/json",
+				["Accept"] = "application/json"
+			},
+			Body = HttpService:JSONEncode({
+				requestId = tostring(action.requestId or action.request_id or ""),
+				results = resultados,
+				total = #resultados
+			})
+		})
+	end)
+
+	if not ok or not response.Success then
+		warn("[Roblox AI] No se pudo informar la validación de texturas:", ok and response.Body or response)
+		return false
+	end
+
+	print("[Roblox AI] 🔎 Texturas verificadas:", #resultados)
+	return true
+end
+
+local function cargarModeloCatalogo(assetId)
+	local intentos = {
+		function()
+			return AssetService:LoadAssetAsync(assetId)
+		end,
+		function()
+			return InsertService:LoadAsset(assetId)
+		end
+	}
+
+	if type(game.GetObjects) == "function" then
+		table.insert(intentos, function()
+			local objetos = game:GetObjects(assetId)
+			return objetos and objetos[1] or nil
+		end)
+	end
+
+	for _, intento in ipairs(intentos) do
+		local ok, resultado = pcall(intento)
+		if ok and resultado then
+			return resultado
+		end
+	end
+
+	return nil
+end
+
+--[[
+	* Inserta un modelo del catálogo público de Roblox. El assetId lo decide el
+	* bridge (viene de la búsqueda), nunca el modelo de IA.
+]]
+local function ejecutarInsercionModelo(action)
+	local assetId = tostring(action.assetId or action.id or ""):gsub("%s", "")
+	if string.find(assetId, "^%d+$") == nil then
+		warn("[Roblox AI] Inserción rechazada: assetId no numérico:", assetId)
+		return false
+	end
+
+	local nombre = tostring(action.nombre or "")
+	if string.find(nombre, "[\\/]") then
+		warn("[Roblox AI] Inserción rechazada: nombre con separadores de ruta:", nombre)
+		return false
+	end
+
+	local ruta = tostring(action.path or "")
+	if ruta == "" then
+		ruta = "Workspace/VFXCatalogo"
+	end
+
+	if not raizVFXPermitida(ruta) then
+		warn("[Roblox AI] Ruta rechazada para insertar modelo:", ruta)
+		return false
+	end
+
+	local contenedor = obtenerContenedor(ruta, true)
+	if not contenedor then
+		return false
+	end
+
+	local modelo = cargarModeloCatalogo(tonumber(assetId))
+	if not modelo then
+		warn("[Roblox AI] No se pudo cargar el asset del catálogo:", assetId)
+		return false
+	end
+
+	local partes = 0
+	local emisores = 0
+
+	local function inspeccionar(instancia)
+		if instancia:IsA("BasePart") or instancia:IsA("Light") then
+			partes += 1
+		elseif instancia:IsA("ParticleEmitter") or instancia:IsA("Beam") or instancia:IsA("Trail") then
+			emisores += 1
+		end
+	end
+
+	if modelo:IsA("Model") then
+		for _, descendiente in ipairs(modelo:GetDescendants()) do
+			inspeccionar(descendiente)
+		end
+	else
+		inspeccionar(modelo)
+	end
+
+	if partes == 0 and emisores == 0 then
+		modelo:Destroy()
+		warn("[Roblox AI] Modelo del catálogo sin nada visual, no se insertó:", assetId)
+		return false
+	end
+
+	if nombre ~= "" then
+		modelo.Name = nombre
+	end
+
+	modelo.Parent = contenedor
+	ChangeHistoryService:SetWaypoint("OmniRoute insertar modelo " .. assetId)
+	print(
+		"[Roblox AI] MODELO DEL CATALOGO INSERTADO:",
+		modelo:GetFullName(),
+		"(partes:",
+		partes,
+		"emisores:",
+		emisores,
+		")"
+	)
+	return true
+end
+
 local function ejecutarExtendedAction(action)
 	local tipo = string.lower(tostring(action.type or ""))
 	if not VFX_ACTION_TYPES[tipo] then
 		warn("[Roblox AI] Acción rechazada: el plugin solo ejecuta operaciones VFX.")
 		return false
+	end
+
+	if tipo == "verify_textures" then
+		return ejecutarVerificacionTexturas(action)
+	end
+
+	if tipo == "insertar_modelo" then
+		return ejecutarInsercionModelo(action)
 	end
 
 	local path = tostring(action.path or "")
@@ -762,6 +1444,14 @@ local function ejecutarExtendedAction(action)
 
 		local container = obtenerContenedor(path, true)
 		if not container then return false end
+
+		if not padreVisualValido(className, container) then
+			return false
+		end
+
+		if not propiedadesVisualesValidas(className, action.properties) then
+			return false
+		end
 
 		local existing = container:FindFirstChild(name)
 		if existing then
@@ -809,12 +1499,26 @@ local function ejecutarExtendedAction(action)
 	end
 
 	if tipo == "set_property" then
-		local ok = aplicarPropiedad(object, tostring(action.property or ""), action.value)
+		local propiedad = tostring(action.property or "")
+
+		if not texturaPermitida(object.ClassName, propiedad, action.value) then
+			return false
+		end
+
+		if not ratePermitido(object.ClassName, propiedad, action.value) then
+			return false
+		end
+
+		local ok = aplicarPropiedad(object, propiedad, action.value)
 		if ok then ChangeHistoryService:SetWaypoint("OmniRoute propiedad " .. name) end
 		return ok
 	end
 
 	if tipo == "set_properties" then
+		if not propiedadesVisualesValidas(object.ClassName, action.properties) then
+			return false
+		end
+
 		local total = aplicarPropiedades(object, action.properties)
 		if total > 0 then ChangeHistoryService:SetWaypoint("OmniRoute propiedades " .. name) end
 		return total > 0
@@ -848,6 +1552,10 @@ local function ejecutarExtendedAction(action)
 		local destination = obtenerContenedor(targetPath, false)
 		if not destination then
 			warn("[Roblox AI] Destino no encontrado:", targetPath)
+			return false
+		end
+
+		if not padreVisualValido(object.ClassName, destination) then
 			return false
 		end
 
@@ -962,7 +1670,7 @@ function ejecutarStudioTest(action)
 
 	pcall(function() folder:Destroy() end)
 	pcall(function() clientScript:Destroy() end)
-	
+
 	local postOk, postResponse = pcall(function()
 		return HttpService:RequestAsync({
 			Url = TEST_RESULTS_URL,
@@ -1052,6 +1760,653 @@ local function ejecutarAccion(action)
 	return ejecutarExtendedAction(action)
 end
 
+-- ============================================================
+-- CAPTURA VISUAL DEL VIEWPORT
+-- ============================================================
+
+local CARACTERES_B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+local function codificarBase64(datos)
+	local salida = {}
+	local indice = 1
+	local largo = #datos
+	while indice <= largo do
+		local b1 = string.byte(datos, indice) or 0
+		local b2 = string.byte(datos, indice + 1) or 0
+		local b3 = string.byte(datos, indice + 2) or 0
+		local numero = b1 * 65536 + b2 * 256 + b3
+		local i1 = math.floor(numero / 262144) % 64
+		local i2 = math.floor(numero / 4096) % 64
+		local i3 = math.floor(numero / 64) % 64
+		local i4 = numero % 64
+		salida[#salida + 1] = CARACTERES_B64:sub(i1 + 1, i1 + 1)
+		salida[#salida + 1] = CARACTERES_B64:sub(i2 + 1, i2 + 1)
+		salida[#salida + 1] = CARACTERES_B64:sub(i3 + 1, i3 + 1)
+		salida[#salida + 1] = CARACTERES_B64:sub(i4 + 1, i4 + 1)
+		indice += 3
+	end
+
+	local resto = largo % 3
+	if resto == 1 then
+		salida[#salida] = "="
+		salida[#salida - 1] = "="
+	elseif resto == 2 then
+		salida[#salida] = "="
+	end
+
+	return table.concat(salida)
+end
+
+local TABLA_CRC = table.create(256)
+do
+	for n = 0, 255 do
+		local c = n
+		for _ = 1, 8 do
+			if bit32.band(c, 1) == 1 then
+				c = bit32.bxor(3988292384, bit32.rshift(c, 1))
+			else
+				c = bit32.rshift(c, 1)
+			end
+		end
+		TABLA_CRC[n + 1] = c
+	end
+end
+
+local function crc32(texto)
+	local crc = 4294967295
+	for i = 1, #texto do
+		local indice = bit32.bxor(bit32.band(crc, 255), string.byte(texto, i))
+		crc = bit32.bxor(TABLA_CRC[(indice % 256) + 1], bit32.rshift(crc, 8))
+	end
+	return bit32.bxor(crc, 4294967295)
+end
+
+local function escribirPNG(ancho, alto, pixeles)
+	local firma = string.char(137, 80, 78, 71, 13, 10, 26, 10)
+
+	local ihdr = string.char(
+		bit32.band(bit32.rshift(ancho, 24), 255),
+		bit32.band(bit32.rshift(ancho, 16), 255),
+		bit32.band(bit32.rshift(ancho, 8), 255),
+		bit32.band(ancho, 255),
+		bit32.band(bit32.rshift(alto, 24), 255),
+		bit32.band(bit32.rshift(alto, 16), 255),
+		bit32.band(bit32.rshift(alto, 8), 255),
+		bit32.band(alto, 255),
+		8, 6, 0, 0, 0
+	)
+
+	local anchoFila = ancho * 4
+	local filas = alto * (1 + anchoFila)
+	local crudo = buffer.create(filas)
+	local posicion = 0
+	for y = 0, alto - 1 do
+		buffer.writeu8(crudo, posicion, 0)
+		posicion += 1
+		buffer.copy(crudo, posicion, pixeles, y * anchoFila, anchoFila)
+		posicion += anchoFila
+	end
+
+	local sumaA, sumaB = 1, 0
+	local i = 0
+	while i < filas do
+		local fin = math.min(i + 5552, filas)
+		while i < fin do
+			sumaA = (sumaA + buffer.readu8(crudo, i)) % 65521
+			sumaB = (sumaB + sumaA) % 65521
+			i += 1
+		end
+	end
+	local adler = sumaA * 65536 + sumaB
+
+	local partesZlib = {string.char(120, 1)}
+	local restante = filas
+	local leido = 0
+	while restante > 0 do
+		local trozo = math.min(restante, 65535)
+		local ultimo = trozo == restante
+		table.insert(partesZlib, string.char(ultimo and 1 or 0))
+		table.insert(partesZlib, string.char(
+			bit32.band(trozo, 255),
+			bit32.band(bit32.rshift(trozo, 8), 255),
+			bit32.bxor(bit32.band(trozo, 255), 255),
+			bit32.bxor(bit32.band(bit32.rshift(trozo, 8), 255), 255)
+		))
+		table.insert(partesZlib, buffer.readstring(crudo, leido, trozo))
+		restante -= trozo
+		leido += trozo
+	end
+	table.insert(partesZlib, string.char(
+		bit32.band(bit32.rshift(adler, 24), 255),
+		bit32.band(bit32.rshift(adler, 16), 255),
+		bit32.band(bit32.rshift(adler, 8), 255),
+		bit32.band(adler, 255)
+	))
+
+	local funcionChunk = function(tipo, datos)
+		local largo = #datos
+		local suma = crc32(tipo .. datos)
+		return string.char(
+			bit32.band(bit32.rshift(largo, 24), 255),
+			bit32.band(bit32.rshift(largo, 16), 255),
+			bit32.band(bit32.rshift(largo, 8), 255),
+			bit32.band(largo, 255)
+		) .. tipo .. datos .. string.char(
+			bit32.band(bit32.rshift(suma, 24), 255),
+			bit32.band(bit32.rshift(suma, 16), 255),
+			bit32.band(bit32.rshift(suma, 8), 255),
+			bit32.band(suma, 255)
+		)
+	end
+
+	local idat = table.concat(partesZlib)
+	return firma
+		.. funcionChunk("IHDR", ihdr)
+		.. funcionChunk("IDAT", idat)
+		.. funcionChunk("IEND", "")
+end
+
+local function reducirImagen(imagen, anchoObjetivo)
+	local anchoOrigen = math.floor(imagen.Size.X)
+	local altoOrigen = math.floor(imagen.Size.Y)
+	if anchoOrigen < 1 or altoOrigen < 1 then
+		return nil
+	end
+	local ancho = math.min(anchoObjetivo, anchoOrigen)
+	local alto = math.max(1, math.floor(altoOrigen * ancho / anchoOrigen))
+	local origen = imagen:ReadPixelsBuffer(Vector2.zero, imagen.Size)
+	if buffer.len(origen) < ancho * alto * 4 then
+		return nil
+	end
+	local destino = buffer.create(ancho * alto * 4)
+	local pasoX = anchoOrigen / ancho
+	local pasoY = altoOrigen / alto
+	for y = 0, alto - 1 do
+		local y0 = math.floor(y * pasoY)
+		local y1 = math.max(y0 + 1, math.floor((y + 1) * pasoY))
+		for x = 0, ancho - 1 do
+			local x0 = math.floor(x * pasoX)
+			local x1 = math.max(x0 + 1, math.floor((x + 1) * pasoX))
+			local r, g, b, alfa, n = 0, 0, 0, 0, 0
+			for yy = y0, y1 - 1 do
+				local baseFila = yy * anchoOrigen * 4
+				for xx = x0, x1 - 1 do
+					local indice = baseFila + xx * 4
+					r += buffer.readu8(origen, indice)
+					g += buffer.readu8(origen, indice + 1)
+					b += buffer.readu8(origen, indice + 2)
+					alfa += buffer.readu8(origen, indice + 3)
+					n += 1
+				end
+			end
+			local destinoIndice = (y * ancho + x) * 4
+			buffer.writeu8(destino, destinoIndice, math.floor(r / n))
+			buffer.writeu8(destino, destinoIndice + 1, math.floor(g / n))
+			buffer.writeu8(destino, destinoIndice + 2, math.floor(b / n))
+			buffer.writeu8(destino, destinoIndice + 3, math.floor(alfa / n))
+		end
+	end
+	return destino, ancho, alto
+end
+
+local camaraPrevia = nil
+
+local function resolverRuta(ruta)
+	if type(ruta) ~= "string" or ruta == "" then
+		return nil
+	end
+	local segmentos = {}
+	for parte in string.gmatch(ruta, "[^/.]+") do
+		table.insert(segmentos, parte)
+	end
+	if #segmentos == 0 then
+		return nil
+	end
+	local raiz = game
+	local inicio = 1
+	if segmentos[1] == "game" then
+		inicio = 2
+	else
+		local ok, servicio = pcall(function()
+			return game:GetService(segmentos[1])
+		end)
+		if ok and servicio then
+			raiz = servicio
+			inicio = 2
+		end
+	end
+	local actual = raiz
+	for i = inicio, #segmentos do
+		if not actual then
+			return nil
+		end
+		actual = actual:FindFirstChild(segmentos[i])
+	end
+	return actual
+end
+
+local function restaurarCamara()
+	if camaraPrevia then
+		local camara = workspace.CurrentCamera
+		if camara then
+			camara.CFrame = camaraPrevia
+		end
+		camaraPrevia = nil
+	end
+end
+
+local function encuadrarEfecto(detalles)
+	local camara = workspace.CurrentCamera
+	if not camara then
+		return
+	end
+	local minimo, maximo
+	local function extender(punto)
+		if not minimo then
+			minimo = punto
+			maximo = punto
+			return
+		end
+		minimo = Vector3.new(
+			math.min(minimo.X, punto.X),
+			math.min(minimo.Y, punto.Y),
+			math.min(minimo.Z, punto.Z)
+		)
+		maximo = Vector3.new(
+			math.max(maximo.X, punto.X),
+			math.max(maximo.Y, punto.Y),
+			math.max(maximo.Z, punto.Z)
+		)
+	end
+
+	for _, resumen in ipairs(detalles) do
+		if resumen.ok then
+			local objetivo = resolverRuta(resumen.path)
+			if not objetivo and type(resumen.name) == "string" and resumen.name ~= "" then
+				objetivo = workspace:FindFirstChild(resumen.name)
+			end
+			if objetivo and objetivo:IsA("BasePart") then
+				extender(objetivo.Position)
+			elseif objetivo and objetivo:IsA("Model") and objetivo.PrimaryPart then
+				extender(objetivo.PrimaryPart.Position)
+			end
+		end
+	end
+
+	if not minimo or not maximo then
+		return
+	end
+
+	local centro = (minimo + maximo) / 2
+	local tamano = (maximo - minimo).Magnitude
+	local distancia = math.clamp(tamano * 1.6 + 6, 8, 240)
+	camaraPrevia = camara.CFrame
+	camara.CFrame = CFrame.lookAt(centro + Vector3.new(0.35, 0.3, 1).Unit * distancia, centro)
+	task.wait(0.1)
+end
+
+-- ============================================================
+-- IMAGEN DE REVISION
+-- ============================================================
+-- No existe API soportada para leer los pixeles de una captura de
+-- pantalla: CaptureService:CaptureScreenshot solo devuelve un id
+-- temporal que se puede mostrar o guardar, y
+-- AssetService:CreateEditableImageAsync lo rechaza con
+-- "cannot currently create editable image from temporary texture id".
+--
+-- Lo que si se puede hacer es proyectar la geometria real de la escena
+-- sobre el plano de la camara con la misma matematica que usa el motor
+-- para colocar las cosas en pantalla. El resultado refleja composicion,
+-- proporcion, distribucion, color y brillo de lo construido, y no
+-- depende del renderizador.
+-- ============================================================
+
+local function colorPromedioDeSecuencia(secuencia)
+	if typeof(secuencia) == "ColorSequence" then
+		local r, g, b, n = 0, 0, 0, 0
+		for _, punto in ipairs(secuencia.Keypoints) do
+			local c = punto.Value
+			r, g, b, n = r + c.R, g + c.G, b + c.B, n + 1
+		end
+		if n == 0 then
+			return Color3.new(1, 1, 1)
+		end
+		return Color3.new(r / n, g / n, b / n)
+	elseif typeof(secuencia) == "Color3" then
+		return secuencia
+	end
+	return Color3.new(1, 1, 1)
+end
+
+local function tamanoPromedioDeSecuencia(secuencia)
+	if typeof(secuencia) == "NumberSequence" then
+		local suma, n = 0, 0
+		for _, punto in ipairs(secuencia.Keypoints) do
+			suma, n = suma + punto.Value, n + 1
+		end
+		if n > 0 then
+			return suma / n
+		end
+	elseif typeof(secuencia) == "number" then
+		return secuencia
+	elseif typeof(secuencia) == "NumberRange" then
+		return (secuencia.Min + secuencia.Max) / 2
+	end
+	return 1
+end
+
+-- Reune la geometria real afectada por la ultima tanda de acciones.
+local function recolectarElementosVFX(detalles)
+	local vistos = {}
+	local partes, emisores, luces = {}, {}, {}
+
+	local function visitar(instancia)
+		if not instancia or vistos[instancia] then
+			return
+		end
+		vistos[instancia] = true
+
+		if instancia:IsA("BasePart") then
+			table.insert(partes, instancia)
+		end
+
+		for _, hijo in ipairs(instancia:GetDescendants()) do
+			if vistos[hijo] then
+				continue
+			end
+			vistos[hijo] = true
+			if hijo:IsA("BasePart") then
+				table.insert(partes, hijo)
+			elseif hijo:IsA("ParticleEmitter") then
+				table.insert(emisores, hijo)
+			elseif hijo:IsA("Light") then
+				table.insert(luces, hijo)
+			end
+		end
+	end
+
+	for _, resumen in ipairs(detalles) do
+		if resumen.ok then
+			local objetivo = resolverRuta(resumen.path)
+			if not objetivo and type(resumen.name) == "string" and resumen.name ~= "" then
+				objetivo = workspace:FindFirstChild(resumen.name)
+			end
+			visitar(objetivo)
+		end
+	end
+
+	return {partes = partes, emisores = emisores, luces = luces}
+end
+
+-- Dibuja en un buffer RGBA lo que la camara actual veria de esa geometria.
+local function proyectarEscena(elementos, anchoObjetivo)
+	local camara = workspace.CurrentCamera
+	if not camara then
+		return nil
+	end
+
+	local vista = camara.ViewportSize
+	if vista.X < 1 or vista.Y < 1 then
+		return nil
+	end
+
+	local ancho = math.max(8, math.min(anchoObjetivo, math.floor(vista.X)))
+	local alto = math.max(8, math.floor(ancho * vista.Y / vista.X))
+	local pixeles = buffer.create(ancho * alto * 4)
+
+	for i = 0, ancho * alto - 1 do
+		buffer.writeu8(pixeles, i * 4, 16)
+		buffer.writeu8(pixeles, i * 4 + 1, 17)
+		buffer.writeu8(pixeles, i * 4 + 2, 22)
+		buffer.writeu8(pixeles, i * 4 + 3, 255)
+	end
+
+	local escalaX = ancho / vista.X
+	local escalaY = alto / vista.Y
+	local fov = math.rad(camara.FieldOfView)
+
+	local function pixelesPorStud(distancia)
+		if distancia <= 0.01 then
+			return alto
+		end
+		return alto / (2 * distancia * math.tan(fov / 2))
+	end
+
+	local function cajaDeParte(parte)
+		local c = parte.CFrame
+		local e = parte.Size * 0.5
+		local minimo, maximo, profundidad
+		for sx = -1, 1, 2 do
+			for sy = -1, 1, 2 do
+				for sz = -1, 1, 2 do
+					local p = camara:WorldToViewportPoint(c * Vector3.new(e.X * sx, e.Y * sy, e.Z * sz))
+					if p.Z > 0 then
+						local punto = Vector2.new(p.X * escalaX, p.Y * escalaY)
+						minimo = minimo
+							and Vector2.new(math.min(minimo.X, punto.X), math.min(minimo.Y, punto.Y))
+							or punto
+						maximo = maximo
+							and Vector2.new(math.max(maximo.X, punto.X), math.max(maximo.Y, punto.Y))
+							or punto
+						profundidad = profundidad and math.min(profundidad, p.Z) or p.Z
+					end
+				end
+			end
+		end
+		if not minimo then
+			return nil
+		end
+		return minimo, maximo, profundidad
+	end
+
+	local function pintarPixel(x, y, r, g, b, a)
+		if a <= 0 or x < 0 or y < 0 or x >= ancho or y >= alto then
+			return
+		end
+		local i = (y * ancho + x) * 4
+		local fr = buffer.readu8(pixeles, i) / 255
+		local fg = buffer.readu8(pixeles, i + 1) / 255
+		local fb = buffer.readu8(pixeles, i + 2) / 255
+		buffer.writeu8(pixeles, i, math.clamp(math.floor((r * a + fr * (1 - a)) * 255 + 0.5), 0, 255))
+		buffer.writeu8(pixeles, i + 1, math.clamp(math.floor((g * a + fg * (1 - a)) * 255 + 0.5), 0, 255))
+		buffer.writeu8(pixeles, i + 2, math.clamp(math.floor((b * a + fb * (1 - a)) * 255 + 0.5), 0, 255))
+	end
+
+	local function pintarCaja(minimo, maximo, color, alfa)
+		local x0 = math.max(0, math.floor(minimo.X))
+		local x1 = math.min(ancho - 1, math.ceil(maximo.X))
+		local y0 = math.max(0, math.floor(minimo.Y))
+		local y1 = math.min(alto - 1, math.ceil(maximo.Y))
+		for y = y0, y1 do
+			for x = x0, x1 do
+				pintarPixel(x, y, color.R, color.G, color.B, alfa)
+			end
+		end
+	end
+
+	local function brilloRadial(centro, radio, color, intensidad)
+		local x0 = math.max(0, math.floor(centro.X - radio))
+		local x1 = math.min(ancho - 1, math.ceil(centro.X + radio))
+		local y0 = math.max(0, math.floor(centro.Y - radio))
+		local y1 = math.min(alto - 1, math.ceil(centro.Y + radio))
+		for y = y0, y1 do
+			for x = x0, x1 do
+				local dx, dy = x - centro.X, y - centro.Y
+				local d = math.sqrt(dx * dx + dy * dy) / radio
+				if d < 1 then
+					local a = intensidad * (1 - d) * (1 - d)
+					pintarPixel(x, y, color.R, color.G, color.B, a)
+				end
+			end
+		end
+	end
+
+	local cajas = {}
+	for _, parte in ipairs(elementos.partes) do
+		local minimo, maximo, profundidad = cajaDeParte(parte)
+		if minimo then
+			table.insert(cajas, {parte = parte, minimo = minimo, maximo = maximo, profundidad = profundidad})
+		end
+	end
+
+	-- De lejos a cerca: lo mas cercano tapa lo mas lejano.
+	table.sort(cajas, function(a, b)
+		return a.profundidad > b.profundidad
+	end)
+
+	for _, caja in ipairs(cajas) do
+		local color = caja.parte.Color
+		local r, g, b = color.R, color.G, color.B
+		local material = caja.parte.Material
+		if material == Enum.Material.Neon or material == Enum.Material.Glass then
+			r = math.min(1, r * 1.35 + 0.15)
+			g = math.min(1, g * 1.35 + 0.15)
+			b = math.min(1, b * 1.35 + 0.15)
+		end
+		local alfa = math.clamp(1 - caja.parte.Transparency, 0, 1)
+		pintarCaja(caja.minimo, caja.maximo, Color3.new(r, g, b), alfa)
+	end
+
+	-- Luces: halo aditivo con su color, brillo y alcance reales.
+	for _, luz in ipairs(elementos.luces) do
+		local padre = luz.Parent
+		if padre and padre:IsA("BasePart") then
+			local minimo, maximo, profundidad = cajaDeParte(padre)
+			if minimo then
+				local escala = pixelesPorStud(profundidad)
+				local radio = math.max(3, (luz.Range or 8) * escala * 0.6)
+				local intensidad = math.clamp((luz.Brightness or 1) / 3, 0.08, 0.6)
+				brilloRadial((minimo + maximo) / 2, radio, luz.Color, intensidad)
+			end
+		end
+	end
+
+	-- Particulas: nube de halos con el color y el tamano reales del emisor.
+	for _, emisor in ipairs(elementos.emisores) do
+		local padre = emisor.Parent
+		if padre and padre:IsA("BasePart") then
+			local minimo, maximo, profundidad = cajaDeParte(padre)
+			if minimo then
+				local escala = pixelesPorStud(profundidad)
+				local color = colorPromedioDeSecuencia(emisor.Color)
+				local radio = math.max(2, tamanoPromedioDeSecuencia(emisor.Size) * escala * 0.5)
+				local brillo = math.clamp(emisor.LightEmission or 0, 0, 1)
+				local cantidad = math.clamp(math.floor((emisor.Rate or 20) / 4) + 6, 6, 40)
+				local centro = (minimo + maximo) / 2
+				local extension = math.max(maximo.X - centro.X, maximo.Y - centro.Y) + radio * 2
+				for i = 1, cantidad do
+					local angulo = i * 2.39996
+					local distancia = extension * math.sqrt(i / cantidad)
+					local px = centro.X + math.cos(angulo) * distancia
+					local py = centro.Y + math.sin(angulo) * distancia * 0.85
+					brilloRadial(Vector2.new(px, py), radio, color, 0.25 + 0.35 * brillo)
+				end
+			end
+		end
+	end
+
+	return ancho, alto, pixeles
+end
+
+local capturaEnCurso = false
+
+local function enviarCapturaVisual(detalles, alTerminar)
+	if capturaEnCurso then
+		if alTerminar then
+			alTerminar()
+		end
+		return
+	end
+	capturaEnCurso = true
+
+	local cerrado = false
+	local function terminar(ok, mensaje)
+		if cerrado then
+			return
+		end
+		cerrado = true
+		restaurarCamara()
+		if not ok then
+			warn("[Roblox AI] Captura visual omitida:", mensaje)
+		end
+		capturaEnCurso = false
+		if alTerminar then
+			alTerminar()
+		end
+	end
+
+	-- Encuadrar la camara sobre el efecto: la proyeccion usa esa misma camara.
+	encuadrarEfecto(detalles)
+
+	local elementos = recolectarElementosVFX(detalles)
+	local okProyectar, ancho, alto, pixeles = pcall(proyectarEscena, elementos, CAPTURA_ANCHO_MAX)
+	if not okProyectar or not pixeles then
+		terminar(false, "no se pudo proyectar la escena: " .. tostring(ancho))
+		return
+	end
+
+	local okPng, png = pcall(escribirPNG, ancho, alto, pixeles)
+	if not okPng or not png then
+		terminar(false, "no se pudo codificar el PNG")
+		return
+	end
+
+	local base64 = codificarBase64(png)
+	local okEnvio, respuesta = pcall(function()
+		return HttpService:RequestAsync({
+			Url = VISUAL_CAPTURE_URL,
+			Method = "POST",
+			Headers = {
+				["Content-Type"] = "application/json",
+				["Accept"] = "application/json"
+			},
+			Body = HttpService:JSONEncode({
+				imageBase64 = base64,
+				resolution = {width = ancho, height = alto},
+				tipo = "proyeccion",
+				nota = "Proyeccion de la geometria real de la escena sobre el plano de la camara. No es una foto del render: no incluye iluminacion, sombras, texturas ni particulas simuladas."
+			})
+		})
+	end)
+	if not okEnvio or not respuesta.Success then
+		terminar(false, "el servidor rechazo la imagen de revision")
+		return
+	end
+	print(string.format("[Roblox AI] Proyeccion de la escena enviada (%dx%d) para revision visual", ancho, alto))
+	terminar(true)
+
+	task.delay(MAX_ESPERA_CAPTURA, function()
+		terminar(false, "tiempo agotado")
+	end)
+end
+
+local function informarResultadoAcciones(solicitadas, exitosas, fallidas, detalles)
+	local reportOk, reportResponse = pcall(function()
+		return HttpService:RequestAsync({
+			Url = EXECUTION_RESULTS_URL,
+			Method = "POST",
+			Headers = {
+				["Content-Type"] = "application/json",
+				["Accept"] = "application/json"
+			},
+			Body = HttpService:JSONEncode({
+				requested = solicitadas,
+				successful = exitosas,
+				failed = fallidas,
+				actions = detalles
+			})
+		})
+	end)
+	if not reportOk or not reportResponse.Success then
+		warn("[Roblox AI] No se pudo informar el resultado de las acciones al servidor.")
+	end
+	ChangeHistoryService:SetWaypoint("Cambios VFX completados")
+
+	if exitosas > 0 then
+		escanearProyecto()
+	end
+end
+
 local function consultarServidor()
 	if consultando or not conectado then
 		return
@@ -1110,30 +2465,14 @@ local function consultarServidor()
 	end
 
 	print("[Roblox AI] Resultado acciones: " .. exitosas .. " exitosas | " .. fallidas .. " fallidas")
-	local reportOk, reportResponse = pcall(function()
-		return HttpService:RequestAsync({
-			Url = EXECUTION_RESULTS_URL,
-			Method = "POST",
-			Headers = {
-				["Content-Type"] = "application/json",
-				["Accept"] = "application/json"
-			},
-			Body = HttpService:JSONEncode({
-				requested = #data.actions,
-				successful = exitosas,
-				failed = fallidas,
-				actions = detalles
-			})
-		})
-	end)
-	if not reportOk or not reportResponse.Success then
-		warn("[Roblox AI] No se pudo informar el resultado de las acciones al servidor.")
-	end
-	ChangeHistoryService:SetWaypoint("Cambios VFX completados")
-
 	if exitosas > 0 then
-		escanearProyecto()
+		enviarCapturaVisual(detalles, function()
+			informarResultadoAcciones(#data.actions, exitosas, fallidas, detalles)
+		end)
+		return
 	end
+
+	informarResultadoAcciones(#data.actions, exitosas, fallidas, detalles)
 end
 
 local function iniciarLoops()

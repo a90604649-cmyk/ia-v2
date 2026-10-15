@@ -2,7 +2,15 @@
 import "dotenv/config";
 import express from "express";
 import readline from "readline/promises";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	readFileSync,
+	writeFileSync,
+	readdirSync,
+	statSync,
+	renameSync,
+	mkdirSync
+} from "node:fs";
 import path from "node:path";
 
 import {
@@ -31,6 +39,7 @@ const PROJECT_CONTEXT_PORT = Number(
 let pendingActions = [];
 let lastExecutionReport = null;
 let lastVisualCapture = null;
+let referenciaVisualActual = null;
 let visualReviewCycles = 0;
 const MAX_VISUAL_REVIEW_CYCLES = 2;
 
@@ -170,7 +179,7 @@ const EXTENDED_MARKER =
 "No envíes NumberSequence, ColorSequence o NumberRange como cadenas de texto; usa los objetos tipados descritos arriba",
 "",
 "LÍMITES ACTUALES:",
-"El bridge puede aplicar acciones y comprobar estructura/propiedades, pero no dispone todavía de un bucle de captura visual implementado en esta rama",
+"El bridge puede aplicar acciones y comprobar estructura/propiedades, y SI dispone de un bucle de captura visual: al terminar de aplicar cambios encuadra la camara, captura el viewport real de Studio y lo envia al servidor para compararlo con la imagen de referencia",
 "No digas que capturaste una imagen, inspeccionaste el viewport, ejecutaste una animación o validaste la calidad visual si no hay evidencia real de ello",
 "Para una primera versión, prioriza efectos editables y visibles en el viewport de Studio sin pulsar Play No uses run_studio_test como requisito para un efecto estático de edición",
 "",
@@ -186,11 +195,30 @@ const EXTENDED_MARKER =
 "FUENTES VALIDAS, en orden de preferencia.",
 "1) El CATALOGO DE TEXTURAS VERIFICADAS que recibes en el mensaje de usuario. Es la fuente principal: contiene las texturas ya presentes en el proyecto y las encontradas en el catalogo publico de Roblox para esta consulta.",
 "2) Accion especial buscar_texturas cuando la peticion necesita una textura que no esta en el catalogo recibido. Responde con {\"type\":\"buscar_texturas\",\"keyword\":\"...\",\"motivo\":\"...\"} y ESPERA el resultado: el bridge busca en el catalogo publico de Roblox, valida cada id en Studio y te devuelve solo las que cargan de verdad.",
+"2b) Si lo que falta es una FORMA que no sabes construir con Parts (humo con volumen, telaraña, cristal, hierba, arma, armadura), anade \"tipo\":\"modelo\" a esa misma accion buscar_texturas: el bridge busca MODELOS en el catalogo publico de Roblox, inserta el mejor en Workspace/VFXCatalogo y te devuelve su assetId. Tu NUNCA emitas una accion insertar_modelo: la inserta el bridge.",
 "3) Cualquier assetId que el usuario te indique.",
 "4) Ultimo recurso, las internas del motor: rbxasset://textures/particles/fire_maindds (fuego), smoke_maindds (humo), sparkles_maindds (chispas).",
 "El bridge comprueba cada textura de verdad y RECHAZA la accion si el asset no existe, asi que no intentes colarla",
-"Si necesitas buscar texturas, usa buscar_textures como PRIMERA accion de la respuesta, sin acciones de instancia en el mismo JSON. No inventes nunca el resultado de una busqueda: si no recibes el catalogo verificado, dilo.",
+"Si necesitas buscar texturas, usa buscar_texturas como PRIMERA accion de la respuesta, sin acciones de instancia en el mismo JSON. No inventes nunca el resultado de una busqueda: si no recibes el catalogo verificado, dilo.",
 "",
+"COMO REPRODUCIR UNA IMAGEN DE REFERENCIA:",
+"Si el contexto incluye un ANALISIS VISUAL DE LA IMAGEN, el efecto debe parecerse a esa imagen por su FORMA, no solo por su brillo. Una figura plana (anillo, disco, espiral, estrella, lamina) NO se resuelve con particulas sueltas.",
+"1) Lee el bloque ESTRUCTURA / PLANO / PALETA / PARTICULAS del analisis. La silueta manda sobre todo lo demas. Usa sus cifras relativas (diametros, proporcion entre capas, posicion en la escena) para decidir tamanos y distancias reales.",
+"2) Construye esa silueta con geometria real de Parts ANTES de las particulas:",
+"   - figura plana tumbada en el suelo (anillo, circulo, disco, espiral, estrella): un Part Anchored por capa con Size = Vector3 (D, G, D), siendo D el diametro que diga el analisis y G un grosor fino. EL EJE FINO ES Y: un disco horizontal tiene el eje Y fino. Si pones el grosor en X o en Z el disco queda DE PIE y el efecto sale como un globo o un muro, no como la figura pedida.",
+"     Ese Part va con Transparency = 1, CanCollide = false y Material = SmoothPlastic. Quien dibuja la figura es un Decal DENTRO del Part, nunca la Part en si.",
+"     El Decal es obligatorio cuando la figura se dibuja con una textura: Face = Top (Enum.NormalId.Top) si la figura mira hacia arriba, o Front/Back si mira de lado; Texture del catalogo y Color3 con el color dominante de la imagen. Sin ese Decal la figura no dibuja absolutamente nada.",
+"     Elige la textura por lo que representa visualmente, NUNCA por el nombre de su carpeta: las carpetas del catalogo indican DONDE se usa cada textura en el proyecto, no QUE es la textura. Si ninguna textura del catalogo representa la figura que pide el analisis, emite buscar_texturas como PRIMERA accion con un keyword descriptivo (anillo, circulo, espiral, estrella, rayo, humo, telaraña, cristal) y espera el resultado verificado.",
+"   - varias capas concentricas o paralelas: un Part plano por capa, TODAS con el MISMO centro en X y Z, con los diametros y las alturas que diga el analisis, no todas a la misma altura salvo que el analisis lo indique.",
+"   - figura de pie o vertical (columna, cinta, rayo, llama): Part alargado con la misma paleta, apoyado en el suelo o en el punto que indique el analisis.",
+"   - PROHIBIDO resolver una figura plana con una esfera, una bola de luz, un Material ForceField o un SpecialMesh esferico: eso destruye la silueta. La figura se construye con Parts planos con Decal, y las particulas solo van ENCIMA, nunca en su lugar.",
+"3) Respeta el PLANO del analisis. Si dice suelo: la cara superior del piso de este proyecto esta en Y = -13.5, asi que apoya las figuras planas en Y = -13.4.",
+"4) Usa la PALETA observada: color dominante en Decal.Color3 y en ParticleEmitter.Color, acento en el nucleo y en PointLight.Color.",
+"5) Solo despues anade las particulas: un Attachment por cada zona del analisis (centro, borde, nucleo, base), ParticleEmitter con lo que el analisis diga que emite cada zona, y una PointLight del color del nucleo. Las particulas acompanan a la geometria, nunca la sustituyen.",
+"6) Si el proyecto ya tiene un efecto parecido en Workspace, revisa su ESTRUCTURA REAL (Partes, Decals, emisores y sus propiedades) y trabaja sobre ese en vez de duplicarlo. El nombre de un objeto no indica si sirve.",
+"7) Tras construir, el bridge captura el viewport y te envia la imagen del resultado. Comparala con la referencia y corrige SOLO lo que no coincida; si ya coincide, devuelve actions: [].",
+
+
 "JERARQUIA OBLIGATORIA:",
 "ParticleEmitter, Beam, Trail, Fire, Smoke y Sparkles SOLO funcionan si su PADRE DIRECTO es un BasePart (Part/MeshPart/WedgePart) o un Attachment. Dentro de un Folder o un Model no emiten nada",
 "PointLight, SpotLight y SurfaceLight tambien deben ser hijas DIRECTAS de un BasePart o de un Attachment. Una luz dentro de un Folder no ilumina nada",
@@ -784,7 +812,7 @@ const CHAT_SYSTEM = [
 								* ============================================================
 								* TEXTURAS: CATÁLOGO DEL PROYECTO Y BÚSQUEDA EN EL CATÁLOGO DE ROBLOX
 								* Studio no puede consultar internet (HttpService tiene bloqueados los
-								* dominios de Roblox), así que la búsqueda se hace aquí y la
+									* dominios de Roblox), así que la búsqueda se hace aquí y la
 								* verificación real se hace en Studio con ContentProvider.
 								* ============================================================
 								*/
@@ -796,7 +824,7 @@ const CHAT_SYSTEM = [
 
 								const MAX_TEXTURAS_POR_CATEGORIA = 12;
 								const MAX_BUSQUEDAS_CACHE = 120;
-								const MAX_CANDIDATOS_BUSQUEDA = 40;
+								const MAX_CANDIDATOS_BUSQUEDA = 16;
 
 								let catalogoTexturasProyecto = [];
 								const esperasTexturas = new Map();
@@ -822,1812 +850,1956 @@ const CHAT_SYSTEM = [
 										);
 										return { project: [], searches: [] };
 									}
-								}
-
-								function guardarCacheTexturas(cache) {
-									try {
-										writeFileSync(
-											RUTA_CACHE_TEXTURAS,
-											JSON.stringify(cache),
-											"utf8"
-										);
-									} catch (error) {
-										console.warn(
-											"⚠️ No se pudo guardar la caché de texturas:",
-											error instanceof Error ? error.message : String(error)
-										);
-									}
-								}
-
-								const cacheTexturas = leerCacheTexturas();
-
-								catalogoTexturasProyecto = cacheTexturas.project
-								.filter(
-									(textura) =>
-									textura && typeof textura.id === "string"
-								)
-								.slice(0, 400);
-
-								function claveBusqueda(keyword) {
-									return String(keyword || "")
-									.toLowerCase()
-									.replace(/\s+/g, " ")
-									.trim()
-									.slice(0, 80);
-								}
-
-								function normalizarIdTextura(valor) {
-									const limpio = String(valor || "")
-									.replace(/^rbxassetid:\/\//i, "")
-									.trim();
-
-									return /^\d+$/.test(limpio) ? limpio : null;
-								}
-
-								async function pedirJson(url, timeoutMs = 12000) {
-									try {
-										const response = await fetch(url, {
-											headers: {
-												Accept: "application/json"
-											},
-
-											signal: AbortSignal.timeout(timeoutMs)
-										});
-
-										if (!response.ok) {
-											return null;
-										}
-
-										return await response.json();
-									} catch {
-										return null;
-									}
-								}
-
-								function idsDeCatalogoModerno(datos) {
-									const lista = Array.isArray(datos?.data)
-									? datos.data
-									: Array.isArray(datos)
-									? datos
-									: [];
-
-									return lista
-									.map((item) => {
-										const id = String(item?.id ?? "").trim();
-										const nombre = String(item?.name ?? "").trim();
-										const tipo = String(item?.assetType ?? "").trim();
-
-										if (!/^\d+$/.test(id)) {
-											return null;
-										}
-
-										return { id, nombre, tipo };
-									})
-									.filter(Boolean);
-								}
-
-								function idsDeCatalogoClasico(datos) {
-									const lista = Array.isArray(datos)
-									? datos
-									: Array.isArray(datos?.Items)
-									? datos.Items
-									: [];
-
-									return lista
-									.map((item) => {
-										const id = String(
-											item?.AssetId ?? item?.assetId ?? item?.id ?? ""
-										).trim();
-
-										const nombre = String(
-											item?.Name ?? item?.name ?? ""
-										).trim();
-
-										if (!/^\d+$/.test(id)) {
-											return null;
-										}
-
-										return { id, nombre, tipo: "Decal" };
-									})
-									.filter(Boolean);
-								}
-
-								const PROVEEDORES_CATALOGO = [
-								{
-									nombre: "catalog.roblox.com/v1/search/items",
-									url: (keyword) =>
-									`https://catalog.roblox.com/v1/search/items?category=All&creatorType=User&keyword=${encodeURIComponent(keyword)}&limit=30`,
-									leer: idsDeCatalogoModerno
-								},
-								{
-									nombre: "catalog.roblox.com/v1/search/items (todo)",
-									url: (keyword) =>
-									`https://catalog.roblox.com/v1/search/items?category=All&keyword=${encodeURIComponent(keyword)}&limit=30`,
-									leer: idsDeCatalogoModerno
-								},
-								{
-									nombre: "search.roblox.com/catalog/json",
-									url: (keyword) =>
-									`https://search.roblox.com/catalog/json?Category=Decals&Keyword=${encodeURIComponent(keyword)}&SortType=3&ResultsPerPage=40&PageNumber=1`,
-									leer: idsDeCatalogoClasico
-								}
-								];
-
-								async function buscarEnCatalogoRoblox(keyword) {
-									const clave = claveBusqueda(keyword);
-
-									if (!clave) {
-										return [];
 									}
 
-									for (const proveedor of PROVEEDORES_CATALOGO) {
-										const datos = await pedirJson(proveedor.url(clave));
-										const encontrados = proveedor.leer(datos);
-
-										if (encontrados.length === 0) {
-											continue;
-										}
-
-										const soloDecals = encontrados.filter(
-											(item) => !item.tipo || item.tipo.toLowerCase() === "decal"
-										);
-
-										const utiles = (
-											soloDecals.length > 0 ? soloDecals : encontrados
-										)
-										.slice(0, MAX_CANDIDATOS_BUSQUEDA);
-
-										console.log(
-											`[RobloxAI] 🔎 Catálogo Roblox (${proveedor.nombre}): ${utiles.length} candidatos para "${clave}".`
-										);
-
-										return utiles;
-									}
-
-									console.warn(
-										`[RobloxAI] Ningún proveedor del catálogo público devolvió resultados para "${clave}".`
-									);
-
-									return [];
-								}
-
-								function esperarVerificacionTexturas(
-									requestId,
-									timeoutMs
-								) {
-									return new Promise((resolve) => {
-										const timer = setTimeout(() => {
-											esperasTexturas.delete(requestId);
-											resolve(null);
-										}, timeoutMs);
-
-										esperasTexturas.set(requestId, (results) => {
-											clearTimeout(timer);
-											resolve(results);
-										});
-									});
-								}
-
-								async function verificarTexturasEnStudio(candidatos) {
-									if (candidatos.length === 0) {
-										return [];
-									}
-
-									const requestId = `tex_${Date.now().toString(36)}_${Math.random()
-									.toString(36)
-									.slice(2, 8)}`;
-
-									const espera = esperarVerificacionTexturas(requestId, 25000);
-
-									pendingActions.push({
-										type: "verify_textures",
-										requestId,
-										textures: candidatos.map((item) => ({
-											id: item.id,
-											nombre: item.nombre,
-											categoria: item.categoria
-										}))
-									});
-
-									const respuesta = await espera;
-
-									if (!Array.isArray(respuesta)) {
-										console.warn(
-											"[RobloxAI] Studio no confirmó la validación de texturas: se descartan los resultados de la búsqueda."
-										);
-										return [];
-									}
-
-									return respuesta
-									.filter(
-										(item) =>
-										item && item.carga === true && normalizarIdTextura(item.id)
-									)
-									.map((item) => ({
-										id: normalizarIdTextura(item.id),
-										nombre: String(item.nombre || "").trim(),
-										categoria: String(item.categoria || "").trim()
-									}));
-								}
-
-								async function buscarTexturasVerificadas(keyword) {
-									const clave = claveBusqueda(keyword);
-
-									if (!clave) {
-										return null;
-									}
-
-									const enCache = cacheTexturas.searches.find(
-										(entrada) => entrada && entrada.keyword === clave
-									);
-
-									if (
-										enCache &&
-										Date.now() - Number(enCache.at || 0) < 7 * 24 * 60 * 60 * 1000
-									) {
-										console.log(
-											`[RobloxAI] 💾 Texturas de "${clave}" recuperadas de la caché local.`
-										);
-										return enCache.textures;
-									}
-
-									const candidatos = await buscarEnCatalogoRoblox(clave);
-
-									if (candidatos.length === 0) {
-										return null;
-									}
-
-									const validadas = await verificarTexturasEnStudio(candidatos);
-
-									if (validadas.length === 0) {
-										return null;
-									}
-
-									const entrada = {
-										keyword: clave,
-										at: Date.now(),
-										textures: validadas.slice(0, 10)
-									};
-
-									cacheTexturas.searches = [
-										entrada,
-										...cacheTexturas.searches.filter(
-											(item) => item && item.keyword !== clave
-										)
-									].slice(0, MAX_BUSQUEDAS_CACHE);
-
-									guardarCacheTexturas(cacheTexturas);
-
-									return entrada.textures;
-								}
-
-								function seccionTexturas(mensajeUsuario = "") {
-									const lineas = [];
-									const porCategoria = new Map();
-
-									for (const textura of catalogoTexturasProyecto) {
-										const id = normalizarIdTextura(textura.id);
-
-										if (!id) {
-											continue;
-										}
-
-										const categoria = textura.categoria || "Proyecto";
-
-										if (!porCategoria.has(categoria)) {
-											porCategoria.set(categoria, []);
-										}
-
-										const lista = porCategoria.get(categoria);
-										if (!lista.includes(id)) {
-											lista.push(id);
-										}
-									}
-
-									if (porCategoria.size > 0) {
-										lineas.push(
-											"CATÁLOGO DE TEXTURAS VERIFICADAS (ids que cargan de verdad en este proyecto; úsalos con el prefijo rbxassetid://):"
-										);
-
-										for (const [categoria, ids] of porCategoria) {
-											if (ids.length === 0) {
-												continue;
-											}
-
-											lineas.push(
-												`- ${categoria}: ${ids
-													.slice(0, MAX_TEXTURAS_POR_CATEGORIA)
-													.map((id) => `rbxassetid://${id}`)
-													.join(", ")}${ids.length > MAX_TEXTURAS_POR_CATEGORIA ? ", ..." : ""}`
+									function guardarCacheTexturas(cache) {
+										try {
+											writeFileSync(
+												RUTA_CACHE_TEXTURAS,
+												JSON.stringify(cache),
+												"utf8"
+											);
+										} catch (error) {
+											console.warn(
+												"⚠️ No se pudo guardar la caché de texturas:",
+												error instanceof Error ? error.message : String(error)
 											);
 										}
-									} else {
-										lineas.push(
-											"CATÁLOGO DE TEXTURAS: todavía no se ha recibido el catálogo del proyecto desde Studio."
-										);
-										lineas.push(
-											"Conecta el plugin de Roblox AI en Studio (envía el catálogo automáticamente) o pide texturas con la acción buscar_texturas."
-										);
+										}
+
+										const cacheTexturas = leerCacheTexturas();
+
+										catalogoTexturasProyecto = cacheTexturas.project
+										.filter(
+											(textura) =>
+											textura && typeof textura.id === "string"
+										)
+										.slice(0, 400);
+
+										function claveBusqueda(keyword) {
+											return String(keyword || "")
+											.toLowerCase()
+											.replace(/\s+/g, " ")
+											.trim()
+											.slice(0, 80);
+											}
+
+											function normalizarIdTextura(valor) {
+												const limpio = String(valor || "")
+												.replace(/^rbxassetid:\/\//i, "")
+												.trim();
+
+												return /^\d+$/.test(limpio) ? limpio : null;
+												}
+
+												async function pedirJson(url, timeoutMs = 12000) {
+													try {
+														const response = await fetch(url, {
+															headers: {
+																Accept: "application/json"
+															},
+
+															signal: AbortSignal.timeout(timeoutMs)
+														});
+
+														if (!response.ok) {
+															return null;
+															}
+
+															return await response.json();
+													} catch {
+														return null;
+													}
+													}
+
+													function idsDeCatalogoModerno(datos) {
+														const lista = Array.isArray(datos?.data)
+														? datos.data
+														: Array.isArray(datos)
+														? datos
+														: [];
+
+														return lista
+														.map((item) => {
+															const id = String(item?.id ?? "").trim();
+															const nombre = String(item?.name ?? "").trim();
+															const tipo = String(item?.assetType ?? "").trim();
+
+															if (!/^\d+$/.test(id)) {
+																return null;
+																}
+
+																return { id, nombre, tipo };
+														})
+														.filter(Boolean);
+														}
+
+														function idsDeCatalogoClasico(datos) {
+															const lista = Array.isArray(datos)
+															? datos
+															: Array.isArray(datos?.Items)
+															? datos.Items
+															: [];
+
+															return lista
+															.map((item) => {
+																const id = String(
+																	item?.AssetId ?? item?.assetId ?? item?.id ?? ""
+																).trim();
+
+																const nombre = String(
+																	item?.Name ?? item?.name ?? ""
+																).trim();
+
+																if (!/^\d+$/.test(id)) {
+																	return null;
+																	}
+
+																	return { id, nombre, tipo: "Decal" };
+															})
+															.filter(Boolean);
+															}
+
+															const PROVEEDORES_CATALOGO = [
+															{
+																nombre: "catalog.roblox.com/v1/search/items",
+																url: (keyword) =>
+																`https://catalog.roblox.com/v1/search/items?category=All&creatorType=User&keyword=${encodeURIComponent(keyword)}&limit=30`,
+																leer: idsDeCatalogoModerno
+															},
+															{
+																nombre: "catalog.roblox.com/v1/search/items (todo)",
+																url: (keyword) =>
+																`https://catalog.roblox.com/v1/search/items?category=All&keyword=${encodeURIComponent(keyword)}&limit=30`,
+																leer: idsDeCatalogoModerno
+															},
+															{
+																nombre: "search.roblox.com/catalog/json",
+																url: (keyword) =>
+																`https://search.roblox.com/catalog/json?Category=Decals&Keyword=${encodeURIComponent(keyword)}&SortType=3&ResultsPerPage=40&PageNumber=1`,
+																leer: idsDeCatalogoClasico
+															}
+															];
+
+															const PROVEEDORES_MODELOS = [
+															{
+																nombre: "catalog.roblox.com/v1/search/items (modelos)",
+																url: (keyword) =>
+																`https://catalog.roblox.com/v1/search/items?category=Models&creatorType=User&keyword=${encodeURIComponent(keyword)}&limit=30`,
+																leer: idsDeCatalogoModerno
+															},
+															{
+																nombre: "search.roblox.com/catalog/json (modelos)",
+																url: (keyword) =>
+																`https://search.roblox.com/catalog/json?Category=Models&Keyword=${encodeURIComponent(keyword)}&SortType=3&ResultsPerPage=40&PageNumber=1`,
+																leer: (datos) =>
+																idsDeCatalogoClasico(datos).map((item) => ({ ...item, tipo: "Modelo" }))
+															}
+															];
+
+															async function buscarEnCatalogoRoblox(keyword, tipo = "textura") {
+																const clave = claveBusqueda(keyword);
+
+																if (!clave) {
+																	return [];
+																	}
+
+																	for (const proveedor of (tipo === "modelo" ? PROVEEDORES_MODELOS : PROVEEDORES_CATALOGO)) {
+																		const datos = await pedirJson(proveedor.url(clave));
+																		const encontrados = proveedor.leer(datos);
+
+																		if (encontrados.length === 0) {
+																			continue;
+																			}
+
+																			const soloDecals = encontrados.filter(
+																				(item) => tipo === "modelo" || !item.tipo || item.tipo.toLowerCase() === "decal"
+																			);
+
+																			const utiles = (
+																				soloDecals.length > 0 ? soloDecals : encontrados
+																			)
+																			.slice(0, MAX_CANDIDATOS_BUSQUEDA);
+
+																			console.log(
+																				`[RobloxAI] 🔎 Catálogo Roblox (${proveedor.nombre}): ${utiles.length} candidatos para "${clave}".`
+																			);
+
+																			return utiles;
+																			}
+
+																		console.warn(
+																			`[RobloxAI] Ningún proveedor del catálogo público devolvió resultados para "${clave}".`
+																		);
+
+																		return [];
+																		}
+
+																function esperarVerificacionTexturas(
+																	requestId,
+																	timeoutMs
+																) {
+																	return new Promise((resolve) => {
+																		const timer = setTimeout(() => {
+																			esperasTexturas.delete(requestId);
+																			resolve(null);
+																		}, timeoutMs);
+
+																		esperasTexturas.set(requestId, (results) => {
+																			clearTimeout(timer);
+																			resolve(results);
+																		});
+																	});
+																	}
+
+																	async function verificarTexturasEnStudio(candidatos) {
+																		if (candidatos.length === 0) {
+																			return [];
+																		}
+
+																		const requestId = `tex_${Date.now().toString(36)}_${Math.random()
+																		.toString(36)
+																		.slice(2, 8)}`;
+
+																		const espera = esperarVerificacionTexturas(requestId, 60000);
+
+																		pendingActions.push({
+																			type: "verify_textures",
+																			requestId,
+																			textures: candidatos.map((item) => ({
+																				id: item.id,
+																				nombre: item.nombre,
+																				categoria: item.categoria
+																			}))
+																		});
+
+																		const respuesta = await espera;
+
+																		if (!Array.isArray(respuesta)) {
+																			console.warn(
+																				"[RobloxAI] Studio no confirmó la validación de texturas: se descartan los resultados de la búsqueda."
+																			);
+																			return [];
+																			}
+
+																			return respuesta
+																			.filter(
+																				(item) =>
+																				item && item.carga === true && normalizarIdTextura(item.id)
+																			)
+																			.map((item) => ({
+																				id: normalizarIdTextura(item.id),
+																				nombre: String(item.nombre || "").trim(),
+																				categoria: String(item.categoria || "").trim()
+																			}));
+																			}
+
+	async function buscarTexturasVerificadas(keyword, tipo = "textura") {
+																		const clave = claveBusqueda(keyword);
+
+																		if (!clave) {
+																			return null;
+																			}
+
+																			const enCache = cacheTexturas.searches.find(
+																				(entrada) => entrada && entrada.keyword === clave && entrada.tipo === tipo
+																			);
+
+																				if (
+																					enCache &&
+																					Date.now() - Number(enCache.at || 0) < 7 * 24 * 60 * 60 * 1000
+																					) {
+																						console.log(
+																							`[RobloxAI] 💾 Texturas de "${clave}" recuperadas de la caché local.`
+																						);
+																						return enCache.textures;
+																					}
+
+																					const candidatos = await buscarEnCatalogoRoblox(clave, tipo);
+
+																					if (candidatos.length === 0) {
+																						return null;
+																						}
+
+																						const validadas = tipo === "modelo"
+? candidatos
+: await verificarTexturasEnStudio(candidatos);
+
+																						if (validadas.length === 0) {
+																							return null;
+																							}
+
+																							const entrada = {
+																								keyword: clave, tipo,
+																								at: Date.now(),
+																								textures: validadas.slice(0, 10)
+																							};
+
+																							cacheTexturas.searches = [
+																							entrada,
+																							...cacheTexturas.searches.filter(
+																								(item) => item && (item.keyword !== clave || item.tipo !== tipo)
+																							)
+																							].slice(0, MAX_BUSQUEDAS_CACHE);
+
+																							guardarCacheTexturas(cacheTexturas);
+
+																							return entrada.textures;
+																							}
+
+																			function seccionTexturas(mensajeUsuario = "") {
+																				const lineas = [];
+																				const porCategoria = new Map();
+
+																				for (const textura of catalogoTexturasProyecto) {
+																					const id = normalizarIdTextura(textura.id);
+
+																					if (!id) {
+																						continue;
+																						}
+
+																						const categoria = textura.categoria || "Proyecto";
+
+																						if (!porCategoria.has(categoria)) {
+																							porCategoria.set(categoria, []);
+																							}
+
+																							const lista = porCategoria.get(categoria);
+																							if (!lista.includes(id)) {
+																								lista.push(id);
+																								}
+																								}
+
+																					if (porCategoria.size > 0) {
+																						lineas.push(
+																							"CATÁLOGO DE TEXTURAS VERIFICADAS (ids que cargan de verdad en este proyecto; úsalos con el prefijo rbxassetid://):"
+																						);
+
+																						for (const [categoria, ids] of porCategoria) {
+																							if (ids.length === 0) {
+																								continue;
+																							}
+
+																							lineas.push(
+																								`- ${categoria}: ${ids
+																								.slice(0, MAX_TEXTURAS_POR_CATEGORIA)
+																								.map((id) => `rbxassetid://${id}`)
+																								.join(", ")}${ids.length > MAX_TEXTURAS_POR_CATEGORIA ? ", ..." : ""}`
+																							);
+																							}
+																							} else {
+	lineas.push(
+		"CATÁLOGO DE TEXTURAS: todavía no se ha recibido el catálogo del proyecto desde Studio."
+	);
+	lineas.push(
+		"Conecta el plugin de Roblox AI en Studio (envía el catálogo automáticamente) o pide texturas con la acción buscar_texturas."
+	);
+	}
+
+	const palabras = claveBusqueda(mensajeUsuario)
+	.split(" ")
+	.filter((palabra) => palabra.length >= 4);
+
+	const relevantes = cacheTexturas.searches
+	.filter((entrada) => {
+		if (!entrada || !entrada.keyword) {
+			return false;
+		}
+
+		return claveBusqueda(entrada.keyword)
+		.split(" ")
+		.some((palabra) => palabras.includes(palabra));
+	})
+	.slice(0, 2);
+
+	if (relevantes.length > 0) {
+		lineas.push(
+			"TEXTURAS YA BUSCADAS Y VERIFICADAS EN STUDIO PARA ESTA CONSULTA:"
+		);
+
+		for (const entrada of relevantes) {
+			lineas.push(
+				`- "${entrada.keyword}": ${entrada.textures
+				.map((textura) => `rbxassetid://${textura.id}`)
+				.join(", ")}`
+			);
+			}
+			}
+
+		return lineas.join("\n");
+		}
+
+	function textoResultadoBusquedaTexturas(keyword, texturas, tipo) {
+	if (!texturas || texturas.length === 0) {
+		const esModelo = tipo === "modelo";
+		return [
+		`BÚSQUEDA SIN RESULTADOS para "${keyword}".`,
+		esModelo
+		? "Ningún modelo encontrado en el catálogo de Studio cargó en Studio. No inventes ids de assets: crea el VFX con Parts o dilo con honestidad en tu respuesta."
+		: "Ninguna textura encontrada cargó en Studio. No inventes ids: usa texturas del catálogo ya recibido o dilo con honestidad en tu respuesta."
+		].join("\n");
+	}
+
+	if (tipo === "modelo") {
+		return [
+		`MODELOS DEL CATÁLOGO DE ROBLOX para "${keyword}" (se insertan en Studio desde el bridge; NO son tuyos, no los edites como si los hubieras creado):`,
+		...texturas.map(
+			(modelo) =>
+			`- assetId ${modelo.id}${modelo.nombre ? ` (${modelo.nombre})` : ""}`
+		),
+		"Usa estos modelos como base visual (reescala, tiñe o copia sus Partículas). No inventes ningún otro assetId."
+		].join("\n");
+	}
+
+	return [
+	`TEXTURAS VERIFICADAS para "${keyword}" (comprobadas en Studio con ContentProvider; úsalas tal cual):`,
+	...texturas.map(
+		(textura) =>
+		`- rbxassetid://${textura.id}${textura.nombre ? ` (${textura.nombre})` : ""}`
+	),
+	"No inventes ningún otro id. Si ninguna de estas encaja con el efecto, dilo en tu respuesta en lugar de inventar."
+	].join("\n");
+	}
+
+		/*
+		* ============================================================
+		* CONSTRUCCIÓN DEL CONTEXTO
+		* ============================================================
+		*/
+
+	/*
+	* CANAL DE ENTRADA DE LA IMAGEN DE REFERENCIA.
+	* El usuario copia cualquier imagen dentro de ./entradas y se adjunta
+	* sola a la siguiente peticion de VFX, sin escribir ninguna ruta.
+	*/
+	const CARPETA_IMAGENES = path.join(process.cwd(), "entradas");
+
+	const CARPETA_IMAGENES_USADAS = path.join(CARPETA_IMAGENES, "usadas");
+
+	const EXTENSIONES_IMAGEN = [".png", ".jpg", ".jpeg", ".webp", ".gif"];
+
+	try {
+		mkdirSync(CARPETA_IMAGENES, {
+			recursive: true
+		});
+		mkdirSync(CARPETA_IMAGENES_USADAS, {
+			recursive: true
+		});
+	} catch {
+		console.warn(
+			"[RobloxAI] No se pudo crear ./entradas; el canal de imagen de referencia no estará disponible."
+		);
+	}
+
+	function listarImagenesEntrada() {
+		try {
+			const archivos = readdirSync(CARPETA_IMAGENES, {
+				withFileTypes: true
+			});
+
+			return archivos
+			.filter((entrada) => entrada.isFile())
+			.map((entrada) => {
+				const ruta = path.join(CARPETA_IMAGENES, entrada.name);
+				const estadisticas = statSync(ruta);
+				return {
+					ruta,
+					nombre: entrada.name,
+					extension: path.extname(entrada.name).toLowerCase(),
+					modificado: estadisticas.mtimeMs
+				};
+			})
+			.filter((archivo) => EXTENSIONES_IMAGEN.includes(archivo.extension))
+			.sort((a, b) => b.modificado - a.modificado);
+		} catch {
+			return [];
+		}
+	}
+
+	function hayImagenPendiente() {
+		return listarImagenesEntrada().length > 0;
+	}
+
+	function consumirImagenPendiente() {
+		const pendientes = listarImagenesEntrada();
+		if (pendientes.length === 0) {
+			return null;
+		}
+
+		const archivo = pendientes[0];
+
+		try {
+			mkdirSync(CARPETA_IMAGENES_USADAS, {
+				recursive: true
+			});
+
+			const destino = path.join(CARPETA_IMAGENES_USADAS, archivo.nombre);
+			renameSync(archivo.ruta, destino);
+			return destino;
+		} catch {
+			return archivo.ruta;
+		}
+	}
+
+	/*
+	* Convierte el mensaje del usuario en el contenido que se envía
+	* al modelo. Si incluye "imagen: ruta" o "@img: ruta|URL",
+	* se añade como parte visual la imagen de referencia.
+	*/
+	function extraerImagenDelMensaje(mensaje) {
+			const texto = String(mensaje || "");
+			const encontrado =
+			/(?:^|\s)(?:imagen|foto|captura|@img|image)\s*[:=]\s*(?:"([^"]+)"|'([^']+)'|([^\s,;]+))/i.exec(texto);
+
+	if (!encontrado) {
+		return null;
+		}
+
+		const ruta = String(encontrado[1] || encontrado[2] || encontrado[3] || "")
+		.trim()
+		.replace(/^["']/, "")
+			.replace(/["']$/, "");
+
+				if (!ruta) {
+					return null;
+					}
+
+					if (/^https?:\/\/\S+$/i.test(ruta)) {
+						return ruta;
+						}
+
+						try {
+							if (!existsSync(ruta)) {
+								console.warn(
+									`[RobloxAI] Imagen de referencia no encontrada: ${ruta}`
+								);
+								return null;
+							}
+
+							const datos = readFileSync(ruta);
+
+							if (
+								!datos ||
+								datos.length === 0 ||
+								datos.length > 8 * 1024 * 1024
+								) {
+									return null;
+								}
+
+								const extension =
+								path.extname(ruta).toLowerCase();
+								const mime =
+								extension === ".png"
+								? "image/png"
+								: extension === ".gif"
+								? "image/gif"
+								: extension === ".webp"
+								? "image/webp"
+								: "image/jpeg";
+
+								return `data:${mime};base64,${datos.toString("base64")}`;
+						} catch (error) {
+							console.warn(
+								`[RobloxAI] No se pudo leer la imagen de referencia: ${
+								error instanceof Error
+								? error.message
+								: String(error)
+								}`
+							);
+							return null;
+						}
+						}
+
+						function contenidoConImagen(mensajeUsuario, contenido) {
+		const imagen = extraerImagenDelMensaje(mensajeUsuario);
+
+		if (!imagen) {
+			return contenido;
+			}
+
+			console.log(
+							"[RobloxAI] Imagen de referencia incluida en la petición."
+						);
+
+						referenciaVisualActual = imagen;
+
+						return [
+			{
+				type: "text",
+				text: contenido
+			},
+			{
+				type: "image_url",
+				image_url: {
+					url: imagen
+				}
+			}
+			];
+			}
+
+		function construirContextoProyecto(
+			proyecto
+		) {
+			if (!proyecto) {
+				return [
+				"CONTEXTO REAL DE ROBLOX STUDIO:",
+				"No se recibió contexto utilizable.",
+				"NO inventes objetos ni scripts.",
+				"NO inventes rutas.",
+				"NO crees un sistema de reemplazo.",
+				"Si no puedes identificar el objeto real, no generes una acción destructiva."
+				].join("\n");
+			}
+
+			const manifest =
+			Array.isArray(
+				proyecto.manifest
+			)
+			? proyecto.manifest
+			: [];
+
+			const objects =
+			Array.isArray(
+				proyecto.objects
+			)
+			? proyecto.objects
+			: [];
+
+			const selected =
+			Array.isArray(
+				proyecto.selected
+			)
+			? proyecto.selected
+			: [];
+
+			const compactManifest =
+			manifest
+			.slice(0, 300)
+			.map(
+				(s) =>
+				`- ${s.className}: ${s.path}/${s.name}`
+			)
+			.join("\n");
+
+			/*
+			* Los objetos se muestran en el orden
+			* recibido por Project Context.
+			*
+			* No se introducen prioridades artificiales.
+			*
+			* Cada objeto se describe por COMO SE VE
+			* (tamano, color, textura, emisores y sus
+			* propiedades reales), no por su nombre.
+			* Asi se puede reutilizar lo que ya existe
+			* comparando apariencia, no etiquetas.
+			*/
+			const relevantObjects =
+			objects
+			.slice(0, 300)
+			.map((object) => {
+				const estructura =
+				typeof object.estructura === "string" ? object.estructura.trim() : "";
+				const cabecera = `- ${object.className}: ${object.path}/${object.name}`;
+				return estructura ? `${cabecera} | ${estructura}` : cabecera;
+			})
+			.join("\n");
+
+			/*
+			* Se respeta el ranking general de
+			* Project Context.
+			*
+			* No se favorecen sistemas específicos.
+			*/
+			const selectedOrdenado =
+			[...selected];
+
+			const sourceTexto =
+			selectedOrdenado
+			.slice(0, 24)
+			.map(
+				(s, i) =>
+				[
+				`### SOURCE RELEVANTE ${i + 1}`,
+				`TIPO: ${s.className}`,
+				`RUTA: ${s.path}`,
+				`NOMBRE: ${s.name}`,
+				`SCORE: ${s.score ?? 0}`,
+				`SEÑALES: ${
+				Array.isArray(
+					s.signals
+				)
+				? s.signals.join(
+					", "
+				)
+				: ""
+				}`,
+				"----- INICIO SOURCE REAL -----",
+				String(
+					s.source || ""
+				).slice(
+					0,
+					14000
+				),
+				"----- FIN SOURCE REAL -----"
+				].join("\n")
+			)
+			.join("\n\n");
+
+			return [
+			"CONTEXTO REAL DE ROBLOX STUDIO:",
+			`Consulta utilizada: ${
+			proyecto.query || ""
+			}`,
+			`Scripts totales: ${
+			proyecto.totalScripts ??
+			manifest.length
+			}`,
+			`Objetos totales: ${
+			proyecto.totalObjects ??
+			objects.length
+			}`,
+			"",
+			"MANIFEST REAL:",
+			compactManifest ||
+			"(ninguno)",
+			"",
+			"OBJETOS REALES:",
+			relevantObjects ||
+			"(ninguno)",
+			"",
+			"SOURCE RELEVANTE REAL:",
+			sourceTexto ||
+			"(ninguno)",
+			"",
+			"IMPORTANTE:",
+			"- Los objetos del contexto son reales.",
+			"- Las rutas del contexto son reales.",
+			"- El SOURCE del contexto es real.",
+			"- Cada objeto real puede traer una descripcion de su APARIENCIA (tamano, color, textura, emisores y sus propiedades): usala para decidir si un efecto existente ya se parece al que pides, sin fiarte de su nombre.",
+			"- No inventes nombres.",
+			"- No inventes rutas.",
+			"- No inventes SOURCE.",
+			"- Si existe un sistema relacionado, trabaja sobre ese sistema.",
+			"- Si no existe nada relacionado y el usuario pidió crear algo nuevo, puedes crear lo necesario."
+			]
+			.join("\n")
+			.slice(0, 70000);
+			}
+
+			function construirContextoSeleccionado() {
+				if (
+					!contextoScriptSeleccionado
+				) {
+					return "";
+				}
+
+				return [
+				"SCRIPT SELECCIONADO POR EL USUARIO:",
+				`TIPO: ${
+				contextoScriptSeleccionado
+				.className
+				}`,
+				`RUTA: ${
+				contextoScriptSeleccionado
+				.path
+				}`,
+				`NOMBRE: ${
+				contextoScriptSeleccionado
+				.name
+				}`,
+				"----- SOURCE -----",
+				contextoScriptSeleccionado
+				.source,
+				"----- FIN SOURCE -----"
+				].join("\n");
+				}
+
+				/*
+				* ============================================================
+				* VALIDACIONES GENERALES
+				* ============================================================
+				*/
+
+				function rutaValida(path) {
+					return BASES.some(
+						(base) =>
+						path === base ||
+						path.startsWith(
+							`${base}/`
+						)
+					);
+					}
+
+					function nombreValido(name) {
+						return (
+							Boolean(name) &&
+							!name.includes("/") &&
+							!name.includes("\\") &&
+							name !== "." &&
+							name !== ".."
+						);
+						}
+
+						function separarTarget(target) {
+							const limpio =
+							String(target || "")
+							.trim()
+							.replaceAll("\\", "/")
+							.replace(/\/+/g, "/")
+							.replace(/^\/+/, "")
+							.replace(/\/+$/, "");
+
+							if (!limpio) {
+								return {
+									path: "",
+									name: ""
+								};
+								}
+
+								const partes =
+								limpio
+								.split("/")
+								.map(
+									(x) => x.trim()
+								)
+								.filter(Boolean);
+
+								if (
+									partes.length >= 2
+									) {
+										const name =
+										partes.pop();
+
+										return {
+											path:
+											partes.join(
+												"/"
+											),
+											name
+										};
 									}
 
-									const palabras = claveBusqueda(mensajeUsuario)
-									.split(" ")
-									.filter((palabra) => palabra.length >= 4);
+									return {
+										path: limpio,
+										name: ""
+									};
+									}
 
-									const relevantes = cacheTexturas.searches
-									.filter((entrada) => {
-										if (!entrada || !entrada.keyword) {
+							function existeEnLista(
+								lista,
+								path,
+								name,
+								className = ""
+							) {
+								if (
+									!Array.isArray(lista)
+								) {
+									return false;
+								}
+
+								const esperadoPath =
+								String(path || "")
+								.replaceAll(
+									".",
+									"/"
+								);
+
+								const esperadoName =
+								String(name || "");
+
+								return lista.some(
+									(item) => {
+										if (
+											!item ||
+											typeof item !==
+											"object"
+										) {
 											return false;
 										}
 
-										return claveBusqueda(entrada.keyword)
-										.split(" ")
-										.some((palabra) => palabras.includes(palabra));
-									})
-									.slice(0, 2);
-
-									if (relevantes.length > 0) {
-										lineas.push(
-											"TEXTURAS YA BUSCADAS Y VERIFICADAS EN STUDIO PARA ESTA CONSULTA:"
-										);
-
-										for (const entrada of relevantes) {
-											lineas.push(
-												`- "${entrada.keyword}": ${entrada.textures
-													.map((textura) => `rbxassetid://${textura.id}`)
-													.join(", ")}`
-											);
-										}
-									}
-
-									return lineas.join("\n");
-								}
-
-								function textoResultadoBusquedaTexturas(keyword, texturas) {
-									if (!texturas || texturas.length === 0) {
-										return [
-											`BÚSQUEDA SIN RESULTADOS para "${keyword}".`,
-											"Ninguna textura encontrada cargó en Studio. No inventes ids: usa texturas del catálogo ya recibido o dilo con honestidad en tu respuesta."
-										].join("\n");
-									}
-
-									return [
-										`TEXTURAS VERIFICADAS para "${keyword}" (comprobadas en Studio con ContentProvider; úsalas tal cual):`,
-										...texturas.map(
-											(textura) =>
-											`- rbxassetid://${textura.id}${textura.nombre ? ` (${textura.nombre})` : ""}`
-										),
-										"No inventes ningún otro id. Si ninguna de estas encaja con el efecto, dilo en tu respuesta en lugar de inventar."
-									].join("\n");
-								}
-
-							/*
-							* ============================================================
-							* CONSTRUCCIÓN DEL CONTEXTO
-							* ============================================================
-							*/
-
-							/*
-							* Convierte el mensaje del usuario en el contenido que se envía
-							* al modelo. Si incluye "imagen: ruta" o "@img: ruta|URL",
-							* se añade como parte visual la imagen de referencia.
-							*/
-							function extraerImagenDelMensaje(mensaje) {
-								const texto = String(mensaje || "");
-								const encontrado =
-								/(?:^|\s)(?:imagen|foto|captura|@img|image)\s*[:=]\s*(?:"([^"]+)"|'([^']+)'|([^\s,;]+))/i.exec(texto);
-
-								if (!encontrado) {
-									return null;
-								}
-
-								const ruta = String(encontrado[1] || encontrado[2] || encontrado[3] || "")
-								.trim()
-								.replace(/^["']/, "")
-								.replace(/["']$/, "");
-
-								if (!ruta) {
-									return null;
-								}
-
-								if (/^https?:\/\/\S+$/i.test(ruta)) {
-									return ruta;
-								}
-
-								try {
-									if (!existsSync(ruta)) {
-										console.warn(
-											`[RobloxAI] Imagen de referencia no encontrada: ${ruta}`
-										);
-										return null;
-									}
-
-									const datos = readFileSync(ruta);
-
-									if (
-										!datos ||
-										datos.length === 0 ||
-										datos.length > 8 * 1024 * 1024
-									) {
-										return null;
-									}
-
-									const extension =
-									path.extname(ruta).toLowerCase();
-									const mime =
-									extension === ".png"
-									? "image/png"
-									: extension === ".gif"
-									? "image/gif"
-									: extension === ".webp"
-									? "image/webp"
-									: "image/jpeg";
-
-									return `data:${mime};base64,${datos.toString("base64")}`;
-								} catch (error) {
-									console.warn(
-										`[RobloxAI] No se pudo leer la imagen de referencia: ${
-											error instanceof Error
-											? error.message
-											: String(error)
-										}`
-									);
-									return null;
-								}
-							}
-
-							function contenidoConImagen(mensajeUsuario, contenido) {
-								const imagen = extraerImagenDelMensaje(mensajeUsuario);
-
-								if (!imagen) {
-									return contenido;
-								}
-
-								console.log(
-									"[RobloxAI] Imagen de referencia incluida en la petición."
-								);
-
-								return [
-								{
-									type: "text",
-									text: contenido
-								},
-								{
-									type: "image_url",
-									image_url: {
-										url: imagen
-									}
-								}
-								];
-							}
-
-							function construirContextoProyecto(
-								proyecto
-							) {
-									if (!proyecto) {
-										return [
-										"CONTEXTO REAL DE ROBLOX STUDIO:",
-										"No se recibió contexto utilizable.",
-										"NO inventes objetos ni scripts.",
-										"NO inventes rutas.",
-										"NO crees un sistema de reemplazo.",
-										"Si no puedes identificar el objeto real, no generes una acción destructiva."
-										].join("\n");
-									}
-
-									const manifest =
-									Array.isArray(
-										proyecto.manifest
-									)
-									? proyecto.manifest
-									: [];
-
-									const objects =
-									Array.isArray(
-										proyecto.objects
-									)
-									? proyecto.objects
-									: [];
-
-									const selected =
-									Array.isArray(
-										proyecto.selected
-									)
-									? proyecto.selected
-									: [];
-
-									const compactManifest =
-									manifest
-									.slice(0, 300)
-									.map(
-										(s) =>
-										`- ${s.className}: ${s.path}/${s.name}`
-									)
-									.join("\n");
-
-									/*
-									* Los objetos se muestran en el orden
-									* recibido por Project Context.
-									*
-									* No se introducen prioridades artificiales.
-									*/
-									const relevantObjects =
-									objects
-									.slice(0, 300)
-									.map(
-										(object) =>
-										`- ${object.className}: ${object.path}/${object.name}`
-									)
-									.join("\n");
-
-									/*
-									* Se respeta el ranking general de
-									* Project Context.
-									*
-									* No se favorecen sistemas específicos.
-									*/
-									const selectedOrdenado =
-									[...selected];
-
-									const sourceTexto =
-									selectedOrdenado
-									.slice(0, 24)
-									.map(
-										(s, i) =>
-										[
-										`### SOURCE RELEVANTE ${i + 1}`,
-										`TIPO: ${s.className}`,
-										`RUTA: ${s.path}`,
-										`NOMBRE: ${s.name}`,
-										`SCORE: ${s.score ?? 0}`,
-										`SEÑALES: ${
-										Array.isArray(
-											s.signals
-										)
-										? s.signals.join(
-											", "
-										)
-										: ""
-										}`,
-										"----- INICIO SOURCE REAL -----",
+										const itemPath =
 										String(
-											s.source || ""
-										).slice(
-											0,
-											14000
-										),
-										"----- FIN SOURCE REAL -----"
-										].join("\n")
-									)
-									.join("\n\n");
+											item.path || ""
+										)
+										.replaceAll(
+											".",
+											"/"
+										);
 
-									return [
-									"CONTEXTO REAL DE ROBLOX STUDIO:",
-									`Consulta utilizada: ${
-									proyecto.query || ""
-									}`,
-									`Scripts totales: ${
-									proyecto.totalScripts ??
-									manifest.length
-									}`,
-									`Objetos totales: ${
-									proyecto.totalObjects ??
-									objects.length
-									}`,
-									"",
-									"MANIFEST REAL:",
-									compactManifest ||
-									"(ninguno)",
-									"",
-									"OBJETOS REALES:",
-									relevantObjects ||
-									"(ninguno)",
-									"",
-									"SOURCE RELEVANTE REAL:",
-									sourceTexto ||
-									"(ninguno)",
-									"",
-									"IMPORTANTE:",
-									"- Los objetos del contexto son reales.",
-									"- Las rutas del contexto son reales.",
-									"- El SOURCE del contexto es real.",
-									"- No inventes nombres.",
-									"- No inventes rutas.",
-									"- No inventes SOURCE.",
-									"- Si existe un sistema relacionado, trabaja sobre ese sistema.",
-									"- Si no existe nada relacionado y el usuario pidió crear algo nuevo, puedes crear lo necesario."
-									]
-									.join("\n")
-									.slice(0, 70000);
-									}
+										const itemName =
+										String(
+											item.name || ""
+										);
 
-									function construirContextoSeleccionado() {
+										const itemClass =
+										String(
+											item.className ||
+											item.ClassName ||
+											""
+										);
+
 										if (
-											!contextoScriptSeleccionado
-										) {
-											return "";
+											itemPath !==
+											esperadoPath ||
+											itemName !==
+											esperadoName
+											) {
+												return false;
+											}
+
+											return (
+												!className ||
+												!itemClass ||
+												itemClass ===
+												className
+											);
+									}
+								);
+								}
+
+								function existeObjetoReal(
+									path,
+									name,
+									className = ""
+								) {
+									const proyecto =
+									contextoProyectoActual;
+
+									if (!proyecto) {
+										return false;
 										}
 
-										return [
-										"SCRIPT SELECCIONADO POR EL USUARIO:",
-										`TIPO: ${
-										contextoScriptSeleccionado
-										.className
-										}`,
-										`RUTA: ${
-										contextoScriptSeleccionado
-										.path
-										}`,
-										`NOMBRE: ${
-										contextoScriptSeleccionado
-										.name
-										}`,
-										"----- SOURCE -----",
-										contextoScriptSeleccionado
-										.source,
-										"----- FIN SOURCE -----"
-										].join("\n");
+										if (
+											existeEnLista(
+												proyecto.manifest,
+												path,
+												name,
+												className
+											)
+											) {
+												return true;
+											}
+
+											if (
+												existeEnLista(
+													proyecto.objects,
+													path,
+													name,
+													className
+												)
+												) {
+													return true;
+												}
+
+												if (
+													existeEnLista(
+														proyecto.selected,
+														path,
+														name,
+														className
+													)
+													) {
+														return true;
+													}
+
+													return false;
+													}
+
+									/*
+									* ============================================================
+									* ACCIONES EXTENDIDAS
+									* ============================================================
+									*/
+
+									function parsearAccionExtendidaEmpaquetada(
+										raw
+									) {
+										if (
+											!raw ||
+											typeof raw !==
+											"object" ||
+											typeof raw.code !==
+											"string"
+										) {
+											return null;
 										}
+
+										const code =
+										raw.code.trim();
+
+										if (
+											!code.startsWith(
+												EXTENDED_MARKER
+											)
+											) {
+												return null;
+											}
+
+											const json =
+											code
+											.slice(
+												EXTENDED_MARKER.length
+											)
+											.trim();
+
+											try {
+												const parsed =
+												JSON.parse(json);
+
+												return parsed &&
+												typeof parsed ===
+												"object"
+												? parsed
+												: null;
+											} catch {
+												return null;
+											}
+											}
 
 										/*
 										* ============================================================
-										* VALIDACIONES GENERALES
+										* NORMALIZACIÓN DE ACCIONES
 										* ============================================================
 										*/
 
-										function rutaValida(path) {
-											return BASES.some(
-												(base) =>
-												path === base ||
-												path.startsWith(
-													`${base}/`
-												)
-											);
+										function normalizarAccion(
+											rawAction,
+											options = {}
+										) {
+											if (
+												!rawAction ||
+												typeof rawAction !==
+												"object"
+											) {
+												return null;
 											}
 
-											function nombreValido(name) {
-												return (
-													Boolean(name) &&
-													!name.includes("/") &&
-													!name.includes("\\") &&
-													name !== "." &&
-													name !== ".."
-												);
+											const repairMode =
+											options.repairMode === true;
+
+											const soloAnalisis =
+											options.soloAnalisis === true;
+
+											/*
+											* Detectar acciones extendidas empaquetadas.
+											*/
+											const packed = parsearAccionExtendidaEmpaquetada(rawAction);
+
+											if (packed) {
+												if (
+													repairMode &&
+													(
+														packed.type === "create_instance" ||
+														packed.type === "create_script" ||
+														packed.type === "create_local_script" ||
+														packed.type === "create_module_script"
+													)
+												) {
+													console.warn(
+														"🛑 Creación nueva bloqueada durante reparación:",
+														JSON.stringify(packed, null, 2)
+													);
+													return null;
 												}
 
-												function separarTarget(target) {
-													const limpio =
-													String(target || "")
-													.trim()
-													.replaceAll("\\", "/")
-													.replace(/\/+/g, "/")
-													.replace(/^\/+/, "")
-													.replace(/\/+$/, "");
-
-													if (!limpio) {
-														return {
-															path: "",
-															name: ""
-														};
+												// Decode the packed VFX operation before normalizing it.
+												// Models may serialize paths as Workspace.Parent.Child;
+												// the bridge uses Workspace/Parent/Child.
+												const normalizePackedPath = (value) => {
+													let route = String(value || "").trim().split(String.fromCharCode(92)).join("/");
+													const root = BASES.find((base) => route.startsWith(base + "."));
+													if (root) {
+														route = root + "/" + route.slice(root.length + 1).split(".").join("/");
 														}
+														return route;
+												};
 
-														const partes =
-														limpio
-														.split("/")
-														.map(
-															(x) => x.trim()
-														)
-														.filter(Boolean);
+												rawAction = { ...packed };
+												if (typeof rawAction.path === "string") {
+													rawAction.path = normalizePackedPath(rawAction.path);
+													}
+													if (typeof rawAction.targetPath === "string") {
+														rawAction.targetPath = normalizePackedPath(rawAction.targetPath);
+														}
+														}
+												let type =
+												String(
+													rawAction.type ||
+													rawAction.operation ||
+													rawAction.action ||
+													rawAction.actionType ||
+													rawAction.action_type ||
+													rawAction.command ||
+													""
+												)
+												.trim()
+												.toLowerCase();
 
-														if (
-															partes.length >= 2
-															) {
-																const name =
-																partes.pop();
+												let className =
+												String(
+													rawAction.className ||
+													rawAction.class ||
+													rawAction.scriptType ||
+													rawAction.script_class ||
+													""
+												).trim();
 
-																return {
-																	path:
-																	partes.join(
-																		"/"
-																	),
-																	name
-																};
+												let path =
+												String(
+													rawAction.path ||
+													rawAction.parentPath ||
+													rawAction.folder ||
+													rawAction.container ||
+													rawAction.scriptPath ||
+													rawAction.target ||
+													""
+												).trim();
+
+												let name =
+												String(
+													rawAction.name ||
+													rawAction.scriptName ||
+													rawAction.targetName ||
+													rawAction.objectName ||
+													""
+												).trim();
+
+												const code =
+												String(
+													rawAction.code ||
+													rawAction.source ||
+													rawAction.script ||
+													rawAction.content ||
+													rawAction.sourceCode ||
+													""
+												);
+
+												const typeAliases = {
+													update:
+													className ===
+													"LocalScript"
+													? "update_local_script"
+													: className ===
+													"ModuleScript"
+													? "update_module_script"
+													: "update_script",
+
+													edit:
+													className ===
+													"LocalScript"
+													? "update_local_script"
+													: className ===
+													"ModuleScript"
+													? "update_module_script"
+													: "update_script",
+
+													modify:
+													className ===
+													"LocalScript"
+													? "update_local_script"
+													: className ===
+													"ModuleScript"
+													? "update_module_script"
+													: "update_script",
+
+													create:
+													className ===
+													"LocalScript"
+													? "create_local_script"
+													: className ===
+													"ModuleScript"
+													? "create_module_script"
+													: "create_script"
+												};
+
+												if (typeAliases[type]) {
+													type =
+													typeAliases[type];
+													}
+
+													/*
+													* ACCIÓN ESPECIAL: búsqueda de texturas en el catálogo
+													* público de Roblox. La resuelve el bridge, nunca el plugin.
+													*/
+													if (type === "buscar_texturas") {
+														const keyword = String(
+															rawAction.keyword ||
+															rawAction.query ||
+															rawAction.search ||
+															rawAction.terms ||
+															rawAction.text ||
+															""
+														).trim().slice(0, 80);
+
+														if (!keyword) {
+															return null;
 															}
 
 															return {
-																path: limpio,
-																name: ""
-															};
-															}
-
-													function existeEnLista(
-														lista,
-														path,
-														name,
-														className = ""
-													) {
-														if (
-															!Array.isArray(lista)
-														) {
-															return false;
-														}
-
-														const esperadoPath =
-														String(path || "")
-														.replaceAll(
-															".",
-															"/"
-														);
-
-														const esperadoName =
-														String(name || "");
-
-														return lista.some(
-															(item) => {
-																if (
-																	!item ||
-																	typeof item !==
-																	"object"
-																) {
-																	return false;
-																}
-
-																const itemPath =
-																String(
-																	item.path || ""
-																)
-																.replaceAll(
-																	".",
-																	"/"
-																);
-
-																const itemName =
-																String(
-																	item.name || ""
-																);
-
-																const itemClass =
-																String(
-																	item.className ||
-																	item.ClassName ||
-																	""
-																);
-
-																if (
-																	itemPath !==
-																	esperadoPath ||
-																	itemName !==
-																	esperadoName
-																	) {
-																		return false;
-																	}
-
-																	return (
-																		!className ||
-																		!itemClass ||
-																		itemClass ===
-																		className
-																	);
-															}
-														);
-														}
-
-														function existeObjetoReal(
-															path,
-															name,
-															className = ""
-														) {
-															const proyecto =
-															contextoProyectoActual;
-
-															if (!proyecto) {
-																return false;
-																}
-
-																if (
-																	existeEnLista(
-																		proyecto.manifest,
-																		path,
-																		name,
-																		className
-																	)
-																	) {
-																		return true;
-																	}
-
-																	if (
-																		existeEnLista(
-																			proyecto.objects,
-																			path,
-																			name,
-																			className
-																		)
-																		) {
-																			return true;
-																		}
-
-																		if (
-																			existeEnLista(
-																				proyecto.selected,
-																				path,
-																				name,
-																				className
-																			)
-																			) {
-																				return true;
-																			}
-
-																			return false;
-																			}
-
+															type: "buscar_texturas",
+															keyword,
 															/*
-															* ============================================================
-															* ACCIONES EXTENDIDAS
-															* ============================================================
+															* tipo: "textura" (por defecto) busca imágenes/decals.
+															* tipo: "modelo" busca efectos/modelos completos en el
+															* catálogo: el bridge los inserta sin validar texturas.
 															*/
+															tipo: ["modelo", "model", "models", "efecto", "effect", "fx"]
+															.includes(
+																String(
+																	rawAction.tipo ||
+																	rawAction.kind ||
+																	""
+																)
+																.trim()
+																.toLowerCase()
+															)
+															? "modelo"
+															: "textura",
+																motivo: String(
+																	rawAction.motivo ||
+																	rawAction.reason ||
+																	rawAction.why ||
+																	""
+																).trim().slice(0, 200),
+																cantidad: 10
+															};
+													}
 
-															function parsearAccionExtendidaEmpaquetada(
-																raw
-															) {
-																if (
-																	!raw ||
-																	typeof raw !==
-																	"object" ||
-																	typeof raw.code !==
-																	"string"
+													const classByType = {
+														create_script:
+														"Script",
+
+														create_local_script:
+														"LocalScript",
+
+														create_module_script:
+														"ModuleScript",
+
+														update_script:
+														"Script",
+
+														update_local_script:
+														"LocalScript",
+
+														update_module_script:
+														"ModuleScript",
+
+														delete_script:
+														"Script",
+
+														delete_local_script:
+														"LocalScript",
+
+														delete_module_script:
+														"ModuleScript"
+													};
+
+													if (
+														!className &&
+														classByType[type]
+														) {
+															className =
+															classByType[type];
+														}
+
+														/*
+														* REPARACIÓN:
+														* no crear reemplazos.
+														*/
+														if (
+															repairMode &&
+															(
+																type ===
+																"create_script" ||
+																type ===
+																"create_local_script" ||
+																type ===
+																"create_module_script" ||
+																type ===
+																"create_instance"
+															)
+														) {
+															console.warn(
+																"🛑 Acción de creación rechazada durante reparación:",
+																JSON.stringify(
+																	rawAction,
+																	null,
+																	2
+																)
+															);
+
+															return null;
+														}
+
+														/*
+														* SOLO ANÁLISIS.
+														*/
+														if (soloAnalisis) {
+															return null;
+														}
+
+														/*
+														* PRUEBA.
+														*/
+														if (
+															type ===
+															"run_studio_test"
+														) {
+															const numPlayers =
+															Math.max(
+																1,
+																Math.min(
+																	8,
+																	Number(
+																		rawAction.numPlayers ||
+																		rawAction.players ||
+																		2
+																	)
+																)
+															);
+
+															const duration =
+															Math.max(
+																3,
+																Math.min(
+																	60,
+																	Number(
+																		rawAction.duration ||
+																		10
+																	)
+																)
+															);
+
+															const serverCode =
+															String(
+																rawAction.serverCode ||
+																""
+															).trim();
+
+															const clientCode =
+															String(
+																rawAction.clientCode ||
+																""
+															).trim();
+
+															if (
+																!serverCode &&
+																!clientCode
 																) {
 																	return null;
 																}
 
-																const code =
-																raw.code.trim();
+																return {
+																	type,
+
+																	testId:
+																	String(
+																		rawAction.testId ||
+																		`test_${Date.now()}_${Math.random()
+																		.toString(
+																			36
+																		)
+																		.slice(
+																			2,
+																			8
+																		)}`
+																	),
+
+																	numPlayers,
+
+																	duration,
+
+																	serverCode,
+
+																	clientCode
+																};
+														}
+
+														if (
+															!STANDARD_ACTIONS.has(
+																type
+															) &&
+															!EXTENDED_ACTIONS.has(
+																type
+															)
+															) {
+																return null;
+															}
+
+															/*
+															* Separar target completo.
+															*/
+															if (
+																path &&
+																!rutaValida(path)
+															) {
+																const separado =
+																separarTarget(path);
 
 																if (
-																	!code.startsWith(
-																		EXTENDED_MARKER
-																	)
+																	separado.path &&
+																	separado.name
 																	) {
-																		return null;
+																		path =
+																		separado.path;
+
+																		name =
+																		name ||
+																		separado.name;
 																	}
+															}
 
-																	const json =
-																	code
-																	.slice(
-																		EXTENDED_MARKER.length
-																	)
-																	.trim();
-
-																	try {
-																		const parsed =
-																		JSON.parse(json);
-
-																		return parsed &&
-																		typeof parsed ===
-																		"object"
-																		? parsed
-																		: null;
-																	} catch {
-																		return null;
-																	}
-																	}
-
-																/*
-																* ============================================================
-																* NORMALIZACIÓN DE ACCIONES
-																* ============================================================
-																*/
-
-																function normalizarAccion(
-																	rawAction,
-																	options = {}
+															if (
+																path &&
+																!name
 																) {
+																	const partes =
+																	path
+																	.replaceAll(
+																		"\\",
+																		"/"
+																	)
+																	.split("/")
+																	.filter(Boolean);
+
 																	if (
-																		!rawAction ||
-																		typeof rawAction !==
-																		"object"
+																		partes.length >= 2
+																		) {
+																			name =
+																			partes.pop();
+
+																			path =
+																			partes.join("/");
+																		}
+																}
+
+																path =
+																path
+																.replaceAll(
+																	"\\",
+																	"/"
+																)
+																.replace(
+																	/^\/+/,
+																	""
+																)
+																.replace(
+																	/\/+$/,
+																	""
+																);
+
+																if (
+																	!path ||
+																	!rutaValida(path) ||
+																	!nombreValido(name)
 																	) {
 																		return null;
 																	}
-
-																	const repairMode =
-																	options.repairMode === true;
-
-																	const soloAnalisis =
-																	options.soloAnalisis === true;
 
 																	/*
-																	* Detectar acciones extendidas empaquetadas.
+																	* ========================================================
+																	* ACCIONES EXTENDIDAS
+																	* ========================================================
 																	*/
-																	const packed = parsearAccionExtendidaEmpaquetada(rawAction);
 
-										if (packed) {
-										if (
-										repairMode &&
-										(
-											packed.type === "create_instance" ||
-											packed.type === "create_script" ||
-											packed.type === "create_local_script" ||
-											packed.type === "create_module_script"
-										)
-									) {
-										console.warn(
-											"🛑 Creación nueva bloqueada durante reparación:",
-											JSON.stringify(packed, null, 2)
-										);
-										return null;
-									}
-
-									// Decode the packed VFX operation before normalizing it.
-									// Models may serialize paths as Workspace.Parent.Child;
-									// the bridge uses Workspace/Parent/Child.
-									const normalizePackedPath = (value) => {
-										let route = String(value || "").trim().split(String.fromCharCode(92)).join("/");
-										const root = BASES.find((base) => route.startsWith(base + "."));
-										if (root) {
-											route = root + "/" + route.slice(root.length + 1).split(".").join("/");
-										}
-										return route;
-										};
-
-									rawAction = { ...packed };
-									if (typeof rawAction.path === "string") {
-										rawAction.path = normalizePackedPath(rawAction.path);
-									}
-									if (typeof rawAction.targetPath === "string") {
-										rawAction.targetPath = normalizePackedPath(rawAction.targetPath);
-									}
-								}
-									let type =
-																		String(
-																			rawAction.type ||
-																			rawAction.operation ||
-																			rawAction.action ||
-																			rawAction.actionType ||
-																			rawAction.action_type ||
-																			rawAction.command ||
-																			""
+																	if (
+																		EXTENDED_ACTIONS.has(
+																			type
 																		)
-																		.trim()
-																		.toLowerCase();
-
-																		let className =
-																		String(
-																			rawAction.className ||
-																			rawAction.class ||
-																			rawAction.scriptType ||
-																			rawAction.script_class ||
-																			""
-																		).trim();
-
-																		let path =
-																		String(
-																			rawAction.path ||
-																			rawAction.parentPath ||
-																			rawAction.folder ||
-																			rawAction.container ||
-																			rawAction.scriptPath ||
-																			rawAction.target ||
-																			""
-																		).trim();
-
-																		let name =
-																		String(
-																			rawAction.name ||
-																			rawAction.scriptName ||
-																			rawAction.targetName ||
-																			rawAction.objectName ||
-																			""
-																		).trim();
-
-																		const code =
-																		String(
-																			rawAction.code ||
-																			rawAction.source ||
-																			rawAction.script ||
-																			rawAction.content ||
-																			rawAction.sourceCode ||
-																			""
-																		);
-
-																		const typeAliases = {
-																			update:
-																			className ===
-																			"LocalScript"
-																			? "update_local_script"
-																			: className ===
-																			"ModuleScript"
-																			? "update_module_script"
-																			: "update_script",
-
-																			edit:
-																			className ===
-																			"LocalScript"
-																			? "update_local_script"
-																			: className ===
-																			"ModuleScript"
-																			? "update_module_script"
-																			: "update_script",
-
-																			modify:
-																			className ===
-																			"LocalScript"
-																			? "update_local_script"
-																			: className ===
-																			"ModuleScript"
-																			? "update_module_script"
-																			: "update_script",
-
-																			create:
-																			className ===
-																			"LocalScript"
-																			? "create_local_script"
-																			: className ===
-																			"ModuleScript"
-																			? "create_module_script"
-																			: "create_script"
-																		};
-
-																		if (typeAliases[type]) {
-																			type =
-																			typeAliases[type];
+																	) {
+																		if (
+																			type ===
+																			"create_instance"
+																		) {
+																			if (!className) {
+																				return null;
 																			}
 
-																			/*
-																			* ACCIÓN ESPECIAL: búsqueda de texturas en el catálogo
-																			* público de Roblox. La resuelve el bridge, nunca el plugin.
-																			*/
-																			if (type === "buscar_texturas") {
-																				const keyword = String(
-																					rawAction.keyword ||
-																					rawAction.query ||
-																					rawAction.search ||
-																					rawAction.terms ||
-																					rawAction.text ||
-																					""
-																				).trim().slice(0, 80);
-
-																				if (!keyword) {
-																					return null;
+																			if (repairMode) {
+																				return null;
 																				}
 
 																				return {
-																					type: "buscar_texturas",
-																					keyword,
-																					motivo: String(
-																						rawAction.motivo ||
-																						rawAction.reason ||
-																						rawAction.why ||
-																						""
-																					).trim().slice(0, 200),
-																					cantidad: 10
+																					type,
+																					className,
+																					path,
+																					name,
+
+																					properties:
+																					rawAction.properties &&
+																					typeof rawAction.properties ===
+																					"object"
+																					? rawAction.properties
+																					: {}
 																				};
-																			}
+																		}
 
-																			const classByType = {
-																				create_script:
-																				"Script",
+																		if (
+																			type ===
+																			"set_property"
+																			) {
+																				const property =
+																				String(
+																					rawAction.property ||
+																					""
+																				).trim();
 
-																				create_local_script:
-																				"LocalScript",
-
-																				create_module_script:
-																				"ModuleScript",
-
-																				update_script:
-																				"Script",
-
-																				update_local_script:
-																				"LocalScript",
-
-																				update_module_script:
-																				"ModuleScript",
-
-																				delete_script:
-																				"Script",
-
-																				delete_local_script:
-																				"LocalScript",
-
-																				delete_module_script:
-																				"ModuleScript"
-																			};
-
-																			if (
-																				!className &&
-																				classByType[type]
-																				) {
-																					className =
-																					classByType[type];
-																				}
-
-																				/*
-																				* REPARACIÓN:
-																				* no crear reemplazos.
-																				*/
 																				if (
-																					repairMode &&
-																					(
-																						type ===
-																						"create_script" ||
-																						type ===
-																						"create_local_script" ||
-																						type ===
-																						"create_module_script" ||
-																						type ===
-																						"create_instance"
+																					!property ||
+																					[
+																					"Parent",
+																					"ClassName",
+																					"Source",
+																					"Archivable"
+																					].includes(
+																						property
 																					)
-																				) {
-																					console.warn(
-																						"🛑 Acción de creación rechazada durante reparación:",
-																						JSON.stringify(
-																							rawAction,
-																							null,
-																							2
-																						)
-																					);
-
-																					return null;
-																				}
-
-																				/*
-																				* SOLO ANÁLISIS.
-																				*/
-																				if (soloAnalisis) {
-																					return null;
-																				}
-
-																				/*
-																				* PRUEBA.
-																				*/
-																				if (
-																					type ===
-																					"run_studio_test"
-																				) {
-																					const numPlayers =
-																					Math.max(
-																						1,
-																						Math.min(
-																							8,
-																							Number(
-																								rawAction.numPlayers ||
-																								rawAction.players ||
-																								2
-																							)
-																						)
-																					);
-
-																					const duration =
-																					Math.max(
-																						3,
-																						Math.min(
-																							60,
-																							Number(
-																								rawAction.duration ||
-																								10
-																							)
-																						)
-																					);
-
-																					const serverCode =
-																					String(
-																						rawAction.serverCode ||
-																						""
-																					).trim();
-
-																					const clientCode =
-																					String(
-																						rawAction.clientCode ||
-																						""
-																					).trim();
+																					) {
+																						return null;
+																					}
 
 																					if (
-																						!serverCode &&
-																						!clientCode
+																						repairMode &&
+																						!existeObjetoReal(
+																							path,
+																							name,
+																							className
+																						)
 																						) {
+																							console.warn(
+																								"🛑 set_property rechazado: objeto no encontrado en contexto:",
+																								`${path}/${name}`
+																							);
+
 																							return null;
 																						}
 
 																						return {
 																							type,
+																							className,
+																							path,
+																							name,
+																							property,
+																							value:
+																							rawAction.value
+																						};
+																			}
 
-																							testId:
-																							String(
-																								rawAction.testId ||
-																								`test_${Date.now()}_${Math.random()
-																								.toString(
-																									36
-																								)
-																								.slice(
-																									2,
-																									8
-																								)}`
-																							),
+																			if (
+																				type ===
+																				"set_properties"
+																				) {
+																					if (
+																						!rawAction.properties ||
+																						typeof rawAction.properties !==
+																						"object"
+																					) {
+																						return null;
+																					}
 
-																							numPlayers,
+																					if (
+																						repairMode &&
+																						!existeObjetoReal(
+																							path,
+																							name,
+																							className
+																						)
+																						) {
+																							console.warn(
+																								"🛑 set_properties rechazado: objeto no encontrado en contexto:",
+																								`${path}/${name}`
+																							);
 
-																							duration,
+																							return null;
+																						}
 
-																							serverCode,
-
-																							clientCode
+																						return {
+																							type,
+																							className,
+																							path,
+																							name,
+																							properties:
+																							rawAction.properties
 																						};
 																				}
 
 																				if (
-																					!STANDARD_ACTIONS.has(
-																						type
-																					) &&
-																					!EXTENDED_ACTIONS.has(
-																						type
-																					)
+																					type ===
+																					"rename_instance"
 																					) {
-																						return null;
-																					}
-
-																					/*
-																					* Separar target completo.
-																					*/
-																					if (
-																						path &&
-																						!rutaValida(path)
-																					) {
-																						const separado =
-																						separarTarget(path);
+																						const newName =
+																						String(
+																							rawAction.newName ||
+																							""
+																						).trim();
 
 																						if (
-																							separado.path &&
-																							separado.name
+																							!nombreValido(
+																								newName
+																							)
 																							) {
-																								path =
-																								separado.path;
-
-																								name =
-																								name ||
-																								separado.name;
+																								return null;
 																							}
+
+																							if (
+																								repairMode &&
+																								!existeObjetoReal(
+																									path,
+																									name,
+																									className
+																								)
+																								) {
+																									return null;
+																								}
+
+																								return {
+																									type,
+																									className,
+																									path,
+																									name,
+																									newName
+																								};
 																					}
 
 																					if (
-																						path &&
-																						!name
+																						type ===
+																						"move_instance"
 																						) {
-																							const partes =
-																							path
+																							const targetPath =
+																							String(
+																								rawAction.targetPath ||
+																								rawAction.destination ||
+																								rawAction.destinationPath ||
+																								""
+																							)
+																							.trim()
 																							.replaceAll(
 																								"\\",
 																								"/"
-																							)
-																							.split("/")
-																							.filter(Boolean);
+																							);
 
 																							if (
-																								partes.length >= 2
+																								!rutaValida(
+																									targetPath
+																								)
 																								) {
-																									name =
-																									partes.pop();
-
-																									path =
-																									partes.join("/");
+																									return null;
 																								}
-																						}
 
-																						path =
-																						path
-																						.replaceAll(
-																							"\\",
-																							"/"
-																						)
-																						.replace(
-																							/^\/+/,
-																							""
-																						)
-																						.replace(
-																							/\/+$/,
-																							""
-																						);
+																								if (
+																									repairMode &&
+																									!existeObjetoReal(
+																										path,
+																										name,
+																										className
+																									)
+																									) {
+																										return null;
+																									}
+
+																									return {
+																										type,
+																										className,
+																										path,
+																										name,
+																										targetPath
+																									};
+																						}
 
 																						if (
-																							!path ||
-																							!rutaValida(path) ||
-																							!nombreValido(name)
-																							) {
-																								return null;
-																							}
-
-																							/*
-																							* ========================================================
-																							* ACCIONES EXTENDIDAS
-																							* ========================================================
-																							*/
-
-																							if (
-																								EXTENDED_ACTIONS.has(
-																									type
-																								)
+																							type ===
+																							"delete_instance"
 																							) {
 																								if (
-																									type ===
-																									"create_instance"
-																								) {
-																									if (!className) {
-																										return null;
-																									}
-
-																									if (repairMode) {
-																										return null;
-																										}
-
-																										return {
-																											type,
-																											className,
-																											path,
-																											name,
-
-																											properties:
-																											rawAction.properties &&
-																											typeof rawAction.properties ===
-																											"object"
-																											? rawAction.properties
-																											: {}
-																										};
-																								}
-
-																								if (
-																									type ===
-																									"set_property"
-																									) {
-																										const property =
-																										String(
-																											rawAction.property ||
-																											""
-																										).trim();
-
-																										if (
-																											!property ||
-																											[
-																											"Parent",
-																											"ClassName",
-																											"Source",
-																											"Archivable"
-																											].includes(
-																												property
-																											)
-																											) {
-																												return null;
-																											}
-
-																											if (
-																												repairMode &&
-																												!existeObjetoReal(
-																													path,
-																													name,
-																													className
-																												)
-																												) {
-																													console.warn(
-																														"🛑 set_property rechazado: objeto no encontrado en contexto:",
-																														`${path}/${name}`
-																													);
-
-																													return null;
-																												}
-
-																												return {
-																													type,
-																													className,
-																													path,
-																													name,
-																													property,
-																													value:
-																													rawAction.value
-																												};
-																									}
-
-																									if (
-																										type ===
-																										"set_properties"
-																										) {
-																											if (
-																												!rawAction.properties ||
-																												typeof rawAction.properties !==
-																												"object"
-																											) {
-																												return null;
-																											}
-
-																											if (
-																												repairMode &&
-																												!existeObjetoReal(
-																													path,
-																													name,
-																													className
-																												)
-																												) {
-																													console.warn(
-																														"🛑 set_properties rechazado: objeto no encontrado en contexto:",
-																														`${path}/${name}`
-																													);
-
-																													return null;
-																												}
-
-																												return {
-																													type,
-																													className,
-																													path,
-																													name,
-																													properties:
-																													rawAction.properties
-																												};
-																										}
-
-																										if (
-																											type ===
-																											"rename_instance"
-																											) {
-																												const newName =
-																												String(
-																													rawAction.newName ||
-																													""
-																												).trim();
-
-																												if (
-																													!nombreValido(
-																														newName
-																													)
-																													) {
-																														return null;
-																													}
-
-																													if (
-																														repairMode &&
-																														!existeObjetoReal(
-																															path,
-																															name,
-																															className
-																														)
-																														) {
-																															return null;
-																														}
-
-																														return {
-																															type,
-																															className,
-																															path,
-																															name,
-																															newName
-																														};
-																											}
-
-																											if (
-																												type ===
-																												"move_instance"
-																												) {
-																													const targetPath =
-																													String(
-																														rawAction.targetPath ||
-																														rawAction.destination ||
-																														rawAction.destinationPath ||
-																														""
-																													)
-																													.trim()
-																													.replaceAll(
-																														"\\",
-																														"/"
-																													);
-
-																													if (
-																														!rutaValida(
-																															targetPath
-																														)
-																														) {
-																															return null;
-																														}
-
-																														if (
-																															repairMode &&
-																															!existeObjetoReal(
-																																path,
-																																name,
-																																className
-																															)
-																															) {
-																																return null;
-																															}
-
-																															return {
-																																type,
-																																className,
-																																path,
-																																name,
-																																targetPath
-																															};
-																												}
-
-																												if (
-																													type ===
-																													"delete_instance"
-																													) {
-																														if (
-																															repairMode &&
-																															!existeObjetoReal(
-																																path,
-																																name,
-																																className
-																															)
-																														) {
-																															return null;
-																														}
-
-																														return {
-																															type,
-																															className,
-																															path,
-																															name
-																														};
-																													}
-																							}
-
-																							/*
-																							* ========================================================
-																							* SCRIPTS
-																							* ========================================================
-																							*/
-
-																							const requiredClass =
-																							classByType[type];
-
-																							if (!requiredClass) {
-																								return null;
-																								}
-
-																								if (
-																									className !==
-																									requiredClass
-																									) {
-																										return null;
-																									}
-
-																									/*
-																									* UPDATE:
-																									* el script debe existir.
-																									*/
-																									if (
-																										repairMode &&
-																										type.startsWith(
-																											"update_"
-																										) &&
-																										!existeObjetoReal(
-																											path,
-																											name,
-																											requiredClass
-																										)
-																									) {
-																										console.warn(
-																											"🛑 UPDATE rechazado: el script no existe en el contexto real:",
-																											`${path}/${name}`
-																										);
-
-																										return null;
-																									}
-
-																									/*
-																									* DELETE:
-																									* el script debe existir.
-																									*/
-																									if (
-																										repairMode &&
-																										type.startsWith(
-																											"delete_"
-																										) &&
-																										!existeObjetoReal(
-																											path,
-																											name,
-																											requiredClass
-																										)
-																									) {
-																										console.warn(
-																											"🛑 DELETE rechazado: el script no existe en el contexto real:",
-																											`${path}/${name}`
-																										);
-
-																										return null;
-																									}
-
-																									/*
-																									* SOURCE OBLIGATORIO.
-																									*/
-																									if (
-																										!type.startsWith(
-																											"delete_"
-																										) &&
-																										!code.trim()
-																									) {
-																										return null;
-																									}
-
-																									/*
-																									* Evitar respuestas claramente
-																									* truncadas o inválidas.
-																									*/
-																									if (
-																										!type.startsWith(
-																											"delete_"
-																										) &&
-																										code.length < 20
-																									) {
-																										return null;
-																									}
-
-																									const result = {
-																										type,
-																										className:
-																										requiredClass,
+																									repairMode &&
+																									!existeObjetoReal(
 																										path,
-																										name
-																									};
+																										name,
+																										className
+																									)
+																								) {
+																									return null;
+																								}
 
-																									if (
-																										!type.startsWith(
-																											"delete_"
-																										)
-																										) {
-																											result.code =
-																											code;
-																										}
-
-																										return result;
-																										}
+																								return {
+																									type,
+																									className,
+																									path,
+																									name
+																								};
+																							}
+																	}
 
 																	/*
-																	* ============================================================
-																	* RESPUESTAS JSON
-																	* ============================================================
+																	* ========================================================
+																	* SCRIPTS
+																	* ========================================================
 																	*/
 
-																	function contieneToolCalls(
-																		texto
-																	) {
-																		const raw =
-																		String(texto || "")
-																		.toLowerCase();
+																	const requiredClass =
+																	classByType[type];
 
-																		return (
-																			raw.includes(
-																				'"tool_name"'
-																			) ||
-																			raw.includes(
-																				'"tool_call_id"'
-																			) ||
-																			raw.includes(
-																				'"get_source"'
-																			) ||
-																			raw.includes(
-																				'"read_source"'
-																			) ||
-																			raw.includes(
-																				'"inspect_source"'
-																			) ||
-																			raw.includes(
-																				'"get_script"'
-																			) ||
-																			raw.includes(
-																				'"read_script"'
-																			)
-																		);
+																	if (!requiredClass) {
+																		return null;
 																		}
 
-																		function esAccionPermitidaVFX(action, mensajeUsuario = "") {
-																			if (!action || typeof action !== "object") return false;
-
-																			// Accept native VFX actions and the packed envelope, then validate
-																			// the actual operation in either representation.
-																			let payload = action;
-																			const marker = "__ROBLOX_AI_EXTENDED_ACTION__";
-																			if (action.type === "update_script" && typeof action.code === "string") {
-																				if (!action.code.startsWith(marker)) return false;
-																				try {
-																					payload = JSON.parse(action.code.slice(marker.length).trim());
-																				} catch {
-																					return false;
-																				}
-																				}
-
-																				if (!payload || typeof payload !== "object") return false;
-
-																					/*
-																					* La búsqueda de texturas la resuelve el bridge antes de
-																					* llegar a Studio: no tiene path ni className.
-																					*/
-																					if (String(payload.type || "") === "buscar_texturas") {
-																						return true;
-																					}
-
-																						const actionType = String(payload.type || "");
-																					const className = String(payload.className || "");
-																					const path = String(payload.path || "").replaceAll("\\", "/");
-																					const root = path.split("/")[0];
-																					const visualRoots = new Set(["Workspace", "ReplicatedStorage", "Lighting", "StarterGui"]);
-																					if (!visualRoots.has(root)) return false;
-
-																						const visualClasses = new Set([
-																							"Folder", "Model", "Part", "MeshPart", "WedgePart", "CornerWedgePart",
-																							"Attachment", "ParticleEmitter", "Beam", "Trail", "PointLight", "SpotLight",
-																							"SurfaceLight", "Highlight", "Texture", "Decal", "SpecialMesh", "BlockMesh",
-																							"CylinderMesh", "Fire", "Smoke", "Sparkles", "BillboardGui", "SurfaceGui",
-																							"Frame", "ImageLabel", "ImageButton", "UIGradient", "UICorner"
-																							]);
-																						if (!visualClasses.has(className)) return false;
-
-																							const allowed = new Set([
-																								"create_instance", "set_property", "set_properties", "rename_instance", "move_instance"
-																								]);
-																							if (allowed.has(actionType)) {
-																								if (actionType === "move_instance") {
-																									const targetPath = String(payload.targetPath || "").replaceAll("\\", "/");
-																									if (!visualRoots.has(targetPath.split("/")[0])) return false;
-																								}
-																								return true;
-																								}
-
-																								const explicitlyRequestsDeletion =
-																								/elimina|eliminar|borra|borrar|quita|quitar|remove|delete/i.test(String(mensajeUsuario));
-																								return actionType === "delete_instance" && explicitlyRequestsDeletion;
-																								}
-																			function extraerResultado(
-																				texto,
-																				options = {}
+																		if (
+																			className !==
+																			requiredClass
 																			) {
-																				if (
-																					contieneToolCalls(
-																						texto
-																					)
-																				) {
-																					console.warn(
-																						"⚠️ OmniRoute intentó usar una herramienta inexistente."
-																					);
+																				return null;
+																			}
 
-																					return null;
-																				}
-
-																				const parsed =
-																				parsearRespuestaJson(
-																					texto
+																			/*
+																			* UPDATE:
+																			* el script debe existir.
+																			*/
+																			if (
+																				repairMode &&
+																				type.startsWith(
+																					"update_"
+																				) &&
+																				!existeObjetoReal(
+																					path,
+																					name,
+																					requiredClass
+																				)
+																			) {
+																				console.warn(
+																					"🛑 UPDATE rechazado: el script no existe en el contexto real:",
+																					`${path}/${name}`
 																				);
 
-																				if (
-																					!parsed ||
-																					typeof parsed !==
-																					"object"
-																					) {
-																						return null;
-																					}
+																				return null;
+																			}
 
-																					const actions = [];
-																					const rawActions = Array.isArray(parsed.actions) ? parsed.actions : [];
-																					if (rawActions.length > MAX_VFX_ACTIONS) {
-																						console.warn(`[RobloxAI] Se limitaron las acciones VFX a ${MAX_VFX_ACTIONS} para evitar cambios excesivos en Studio.`);
-																						}
+																			/*
+																			* DELETE:
+																			* el script debe existir.
+																			*/
+																			if (
+																				repairMode &&
+																				type.startsWith(
+																					"delete_"
+																				) &&
+																				!existeObjetoReal(
+																					path,
+																					name,
+																					requiredClass
+																				)
+																			) {
+																				console.warn(
+																					"🛑 DELETE rechazado: el script no existe en el contexto real:",
+																					`${path}/${name}`
+																				);
 
-																						for (
-																							const raw of rawActions.slice(0, MAX_VFX_ACTIONS)
-																							) {
-																								const action =
-																								normalizarAccion(
-																									raw,
-																									options
-																								);
+																				return null;
+																			}
 
-																								if (action && !esAccionPermitidaVFX(action, options.mensajeUsuario)) {
-																									console.warn("⚠️ Acción rechazada: esta rama solo permite acciones visuales de VFX.");
-																									continue;
-																									}
+																			/*
+																			* SOURCE OBLIGATORIO.
+																			*/
+																			if (
+																				!type.startsWith(
+																					"delete_"
+																				) &&
+																				!code.trim()
+																			) {
+																				return null;
+																			}
 
-																									if (action) {
-																										actions.push(
-																											action
-																										);
-																										} else {
+																			/*
+																			* Evitar respuestas claramente
+																			* truncadas o inválidas.
+																			*/
+																			if (
+																				!type.startsWith(
+																					"delete_"
+																				) &&
+																				code.length < 20
+																			) {
+																				return null;
+																			}
+
+																			const result = {
+																				type,
+																				className:
+																				requiredClass,
+																				path,
+																				name
+																			};
+
+																			if (
+																				!type.startsWith(
+																					"delete_"
+																				)
+																				) {
+																					result.code =
+																					code;
+																				}
+
+																				return result;
+																				}
+
+											/*
+											* ============================================================
+											* RESPUESTAS JSON
+											* ============================================================
+											*/
+
+											function contieneToolCalls(
+												texto
+											) {
+												const raw =
+												String(texto || "")
+												.toLowerCase();
+
+												return (
+													raw.includes(
+														'"tool_name"'
+													) ||
+													raw.includes(
+														'"tool_call_id"'
+													) ||
+													raw.includes(
+														'"get_source"'
+													) ||
+													raw.includes(
+														'"read_source"'
+													) ||
+													raw.includes(
+														'"inspect_source"'
+													) ||
+													raw.includes(
+														'"get_script"'
+													) ||
+													raw.includes(
+														'"read_script"'
+													)
+												);
+												}
+
+												function esAccionPermitidaVFX(action, mensajeUsuario = "") {
+													if (!action || typeof action !== "object") return false;
+
+													// Accept native VFX actions and the packed envelope, then validate
+													// the actual operation in either representation.
+													let payload = action;
+													const marker = "__ROBLOX_AI_EXTENDED_ACTION__";
+													if (action.type === "update_script" && typeof action.code === "string") {
+														if (!action.code.startsWith(marker)) return false;
+														try {
+															payload = JSON.parse(action.code.slice(marker.length).trim());
+														} catch {
+															return false;
+														}
+														}
+
+														if (!payload || typeof payload !== "object") return false;
+
+															/*
+															* La búsqueda de texturas la resuelve el bridge antes de
+															* llegar a Studio: no tiene path ni className.
+															*/
+														if (String(payload.type || "") === "buscar_texturas") {
+															return true;
+														}
+
+														/*
+														* La inserción de modelos del catálogo la decide el bridge
+														* (nunca el modelo): solo se acepta con un assetId numérico.
+														*/
+														if (String(payload.type || "") === "insertar_modelo") {
+															const id = String(payload.assetId || payload.id || "").trim();
+															return /^\d+$/.test(id);
+														}
+
+
+															const actionType = String(payload.type || "");
+															const className = String(payload.className || "");
+															const path = String(payload.path || "").replaceAll("\\", "/");
+															const root = path.split("/")[0];
+															const visualRoots = new Set(["Workspace", "ReplicatedStorage", "Lighting", "StarterGui"]);
+															if (!visualRoots.has(root)) return false;
+
+																const visualClasses = new Set([
+																	"Folder", "Model", "Part", "MeshPart", "WedgePart", "CornerWedgePart",
+																	"Attachment", "ParticleEmitter", "Beam", "Trail", "PointLight", "SpotLight",
+																	"SurfaceLight", "Highlight", "Texture", "Decal", "SpecialMesh", "BlockMesh",
+																	"CylinderMesh", "Fire", "Smoke", "Sparkles", "BillboardGui", "SurfaceGui",
+																	"Frame", "ImageLabel", "ImageButton", "UIGradient", "UICorner"
+																	]);
+																if (!visualClasses.has(className)) return false;
+
+																	const allowed = new Set([
+																		"create_instance", "set_property", "set_properties", "rename_instance", "move_instance"
+																		]);
+																	if (allowed.has(actionType)) {
+																		if (actionType === "move_instance") {
+																			const targetPath = String(payload.targetPath || "").replaceAll("\\", "/");
+																			if (!visualRoots.has(targetPath.split("/")[0])) return false;
+																		}
+																		return true;
+																		}
+
+																		const explicitlyRequestsDeletion =
+																		/elimina|eliminar|borra|borrar|quita|quitar|remove|delete/i.test(String(mensajeUsuario));
+																		return actionType === "delete_instance" && explicitlyRequestsDeletion;
+																		}
+													function extraerResultado(
+														texto,
+														options = {}
+													) {
+														if (
+															contieneToolCalls(
+																texto
+															)
+														) {
+															console.warn(
+																"⚠️ OmniRoute intentó usar una herramienta inexistente."
+															);
+
+															return null;
+														}
+
+														const parsed =
+														parsearRespuestaJson(
+															texto
+														);
+
+														if (
+															!parsed ||
+															typeof parsed !==
+															"object"
+															) {
+																return null;
+															}
+
+															const actions = [];
+															const rawActions = Array.isArray(parsed.actions) ? parsed.actions : [];
+															if (rawActions.length > MAX_VFX_ACTIONS) {
+																console.warn(`[RobloxAI] Se limitaron las acciones VFX a ${MAX_VFX_ACTIONS} para evitar cambios excesivos en Studio.`);
+																}
+
+																for (
+																	const raw of rawActions.slice(0, MAX_VFX_ACTIONS)
+																	) {
+																		const action =
+																		normalizarAccion(
+																			raw,
+																			options
+																		);
+
+																		if (action && !esAccionPermitidaVFX(action, options.mensajeUsuario)) {
+																			console.warn("⚠️ Acción rechazada: esta rama solo permite acciones visuales de VFX.");
+																			continue;
+																			}
+
+																			if (action) {
+																				actions.push(
+																					action
+																				);
+																				} else {
 	console.warn(
 		"⚠️ Acción OmniRoute rechazada:",
 		JSON.stringify(
@@ -2649,8 +2821,8 @@ const CHAT_SYSTEM = [
 			action.type ===
 			"run_studio_test"
 			? `${action.type}|${action.testId}`
-			: action.type === "buscar_texturas"
-			? `${action.type}|${action.keyword}`
+: action.type === "buscar_texturas"
+? `${action.type}|${action.tipo || "textura"}|${action.keyword}`
 			: `${action.type}|${action.path}/${action.name}|${action.property || ""}`;
 
 			unique.set(
@@ -2790,1176 +2962,1359 @@ const CHAT_SYSTEM = [
 				async function preguntarNvidiaVision(messages, model = NVIDIA_VISION_MODEL) {
 					const apiKey = String(process.env.NVIDIA_API_KEY || "").trim();
 					if (!apiKey) throw new Error("No hay NVIDIA_API_KEY configurada.");
-					const primaryNemotronTimeoutMs = Math.max(
-						10000,
-						Number(process.env.NVIDIA_VISION_PRIMARY_TIMEOUT_MS || 25000)
-					);
-					const timeoutMs =
-						model === NVIDIA_VISION_MODEL && /nemotron-3-nano-omni/i.test(model)
-							? Math.min(NVIDIA_VISION_TIMEOUT_MS, primaryNemotronTimeoutMs)
-							: NVIDIA_VISION_TIMEOUT_MS;
-					const controller = new AbortController();
-					const timer = setTimeout(() => controller.abort(), timeoutMs);
-					try {
-						const body = {
-							model,
-							messages,
-							temperature: 0.1,
-							max_tokens: 1200,
-							stream: false
-						};
-						// This model-specific option is only sent to Nemotron Omni.
-						if (/nemotron-3-nano-omni/i.test(model)) {
-							body.chat_template_kwargs = { enable_thinking: false };
-						}
-
-						const response = await fetch(NVIDIA_VISION_URL, {
-							method: "POST",
-							headers: {
-								Authorization: `Bearer ${apiKey}`,
-								"Content-Type": "application/json",
-								Accept: "application/json"
-							},
-							body: JSON.stringify(body),
-							signal: controller.signal
-						});
-						const raw = await response.text();
-						let data;
-						try { data = raw ? JSON.parse(raw) : null; } catch { data = null; }
-						if (!response.ok) {
-							const detail = String(
-								data?.detail || data?.message || data?.error?.message || raw || "sin detalles"
-							).slice(0, 900);
-							throw new Error(`NVIDIA Vision HTTP ${response.status}: ${detail}`);
-						}
-						const content = data?.choices?.[0]?.message?.content;
-						if (typeof content === "string" && content.trim()) return content;
-						if (Array.isArray(content)) {
-							const textContent = content
-								.filter((part) => typeof part?.text === "string")
-								.map((part) => part.text)
-								.join("\n")
-								.trim();
-							if (textContent) return textContent;
-						}
-						const firstChoice = data?.choices?.[0];
-						const message = firstChoice?.message;
-						const responseShape = {
-							finish_reason: firstChoice?.finish_reason ?? null,
-							message_fields: message && typeof message === "object" ? Object.keys(message) : [],
-							has_reasoning: Boolean(message?.reasoning || message?.reasoning_content)
-						};
-						console.error("[RobloxAI] NVIDIA Vision no devolvió respuesta final:", JSON.stringify(responseShape));
-						throw new Error(
-							"NVIDIA Vision respondió sin texto final. Detalle seguro: " + JSON.stringify(responseShape)
+						const primaryNemotronTimeoutMs = Math.max(
+							10000,
+							Number(process.env.NVIDIA_VISION_PRIMARY_TIMEOUT_MS || 25000)
 						);
-					} catch (error) {
-						if (controller.signal.aborted) {
-							throw new Error(`NVIDIA Vision agotó el tiempo límite de ${timeoutMs} ms para ${model}.`);
+						const timeoutMs =
+						model === NVIDIA_VISION_MODEL && /nemotron-3-nano-omni/i.test(model)
+						? Math.min(NVIDIA_VISION_TIMEOUT_MS, primaryNemotronTimeoutMs)
+						: NVIDIA_VISION_TIMEOUT_MS;
+						const controller = new AbortController();
+						const timer = setTimeout(() => controller.abort(), timeoutMs);
+						try {
+							const body = {
+								model,
+								messages,
+								temperature: 0.1,
+								max_tokens: Number(process.env.NVIDIA_VISION_MAX_TOKENS || 2400),
+								stream: false
+							};
+							// This model-specific option is only sent to Nemotron Omni.
+							if (/nemotron-3-nano-omni/i.test(model)) {
+								body.chat_template_kwargs = { enable_thinking: false };
+								}
+
+								const response = await fetch(NVIDIA_VISION_URL, {
+									method: "POST",
+									headers: {
+										Authorization: `Bearer ${apiKey}`,
+										"Content-Type": "application/json",
+										Accept: "application/json"
+									},
+									body: JSON.stringify(body),
+									signal: controller.signal
+								});
+								const raw = await response.text();
+								let data;
+								try { data = raw ? JSON.parse(raw) : null; } catch { data = null; }
+								if (!response.ok) {
+									const detail = String(
+										data?.detail || data?.message || data?.error?.message || raw || "sin detalles"
+									).slice(0, 900);
+									throw new Error(`NVIDIA Vision HTTP ${response.status}: ${detail}`);
+									}
+									const content = data?.choices?.[0]?.message?.content;
+									if (typeof content === "string" && content.trim()) return content;
+										if (Array.isArray(content)) {
+											const textContent = content
+											.filter((part) => typeof part?.text === "string")
+											.map((part) => part.text)
+											.join("\n")
+											.trim();
+											if (textContent) return textContent;
+												}
+											const firstChoice = data?.choices?.[0];
+											const message = firstChoice?.message;
+											const responseShape = {
+												finish_reason: firstChoice?.finish_reason ?? null,
+												message_fields: message && typeof message === "object" ? Object.keys(message) : [],
+												has_reasoning: Boolean(message?.reasoning || message?.reasoning_content)
+											};
+											console.error("[RobloxAI] NVIDIA Vision no devolvió respuesta final:", JSON.stringify(responseShape));
+											throw new Error(
+												"NVIDIA Vision respondió sin texto final. Detalle seguro: " + JSON.stringify(responseShape)
+											);
+						} catch (error) {
+							if (controller.signal.aborted) {
+								throw new Error(`NVIDIA Vision agotó el tiempo límite de ${timeoutMs} ms para ${model}.`);
+							}
+							throw error;
+						} finally {
+							clearTimeout(timer);
 						}
-						throw error;
-					} finally {
-						clearTimeout(timer);
-					}
-				}
+						}
 
-				async function analizarReferenciaVisual(messages) {
-					if (visualAnalysisCache.has(messages)) {
-						return visualAnalysisCache.get(messages);
-					}
+					async function analizarReferenciaVisual(messages) {
+						if (visualAnalysisCache.has(messages)) {
+							return visualAnalysisCache.get(messages);
+						}
 
-					const imagePart = messages
+						const imagePart = messages
 						.filter((message) => message?.role === "user" && Array.isArray(message.content))
 						.flatMap((message) => message.content)
 						.find((part) => part?.type === "image_url" && typeof part.image_url?.url === "string");
 
-					if (!imagePart) {
-						throw new Error("No encontré una imagen válida para analizar.");
-					}
+						if (!imagePart) {
+							throw new Error("No encontré una imagen válida para analizar.");
+							}
 
-					const analysisPromise = (async () => {
-						console.log("[RobloxAI] Analizando la referencia visual de forma compacta...");
-						const visualMessages = [
-							{
-								role: "system",
-								content: [
+							const analysisPromise = (async () => {
+								console.log("[RobloxAI] Analizando la referencia visual de forma compacta...");
+								const visualMessages = [
+								{
+									role: "system",
+									content: [
 									"Eres un artista técnico senior de VFX para Roblox.",
-									"Describe únicamente lo que se aprecia en la imagen.",
-									"Explica silueta, capas visibles, paleta, formas, contraste, brillo, dirección y composición.",
+									"Convierte esta imagen en una ESPECIFICACIÓN MEDIBLE que otro sistema usará para construir geometría real en Roblox Studio.",
+									"Empieza con 2 o 3 frases en prosa describiendo lo que se ve. Después rellena TODAS las etiquetas de abajo, cada una en su propia linea, con valores concretos observados en la imagen y sin adornos:",
+									"ESTRUCTURA: inventario numerado de cada figura distinguible (por ejemplo 1 = anillo exterior, 2 = anillo medio, 3 = nucleo, 4 = destellos alrededor), indicando si cada una es hueca (anillo) o maciza (disco).",
+									"CANTIDAD: numero total de figuras y cuantas de ellas son capas concentricas o paralelas.",
+									"TAMANO_RELATIVO: diametro de cada figura en porcentaje respecto a la mayor, que vale 100.",
+									"SEPARACION: distancia entre figuras consecutivas, en porcentaje del diametro de la mayor.",
+									"ESPESOR: grosor del contorno de cada figura en porcentaje de su propio diametro.",
+									"ALTURA_RELATIVO: altura de cada figura sobre la superficie de apoyo, en porcentaje del diametro mayor (0 = apoyada en el suelo).",
+									"PLANO: suelo, vertical o libre, y desde donde lo deduces.",
+									"ESCENA: si la figura flota sola o esta posada sobre una superficie concreta.",
+									"PALETA: #RRGGBB dominante, #RRGGBB acento, #RRGGBB nucleo",
+									"BRILLO: si el nucleo es cegador, medio o mate, y si hay halo o resplandor alrededor.",
+									"MATERIAL_APARENTE: energia, humo, liquido, metal, cristal o luz.",
+									"PARTICULAS: que particulas se ven, en que zona estan y hacia donde se mueven.",
+									"RASGOS_DISTINTIVOS: los 3 detalles que hay que reproducir si o si para que se reconozca la imagen.",
 									"No generes JSON de acciones, scripts, ni nombres de objetos de Roblox.",
 									"No inventes detalles ocultos ni describas animación como observada si es una imagen estática.",
-									"Responde en español en menos de 180 palabras, como una guía visual para construir el efecto."
-								].join("\n")
-							},
-							{
-								role: "user",
-								content: [
+									"No lo resumes en pocas palabras: la especificación larga y completa es más util que un resumen corto."
+									].join("\n")
+								},
+								{
+									role: "user",
+									content: [
 									{
 										type: "text",
-										text: "Analiza esta referencia para replicar su estilo visual en un VFX editable de Roblox Studio. Describe solamente los rasgos visuales útiles."
+										text: "Analiza esta referencia para replicar su estilo visual en un VFX editable de Roblox Studio. Describe los rasgos visuales utiles y termina con el bloque FORMA / PLANO / PALETA / GEOMETRIA / PARTICULAS, porque ese bloque decide la geometria que se va a construir en el suelo."
 									},
 									imagePart
-								]
-							}
-						];
+									]
+								}
+								];
 
-						let analysis;
-						try {
-							analysis = await preguntarNvidiaVision(visualMessages, NVIDIA_VISION_MODEL);
-						} catch (primaryError) {
-							const primaryMessage = String(primaryError?.message || primaryError);
-							const isEndpointDegraded =
-								/DEGRADED function cannot be invoked/i.test(primaryMessage) ||
-								/NVIDIA Vision HTTP 5\d\d/i.test(primaryMessage) ||
-								/Failed to generate completions/i.test(primaryMessage) ||
-								/NVIDIA Vision agotó el tiempo límite/i.test(primaryMessage) ||
-								/This operation was aborted/i.test(primaryMessage);
-							if (!isEndpointDegraded || !NVIDIA_VISION_FALLBACK_MODEL || NVIDIA_VISION_FALLBACK_MODEL === NVIDIA_VISION_MODEL) {
-							throw primaryError;
-							}
-							console.warn(
-								`[RobloxAI] Modelo visual principal no disponible; probando alternativa ${NVIDIA_VISION_FALLBACK_MODEL}...`
-							);
-							try {
-								analysis = await preguntarNvidiaVision(visualMessages, NVIDIA_VISION_FALLBACK_MODEL);
-							} catch (fallbackError) {
-								throw new Error(
-									`Fallaron ambos modelos visuales. Principal: ${primaryMessage}. Alternativa: ${String(fallbackError?.message || fallbackError)}`
-								);
-							}
-						}
-
-						const cleanAnalysis = String(analysis || "").trim();
-						if (!cleanAnalysis) {
-							throw new Error("El modelo visual no devolvió una descripción utilizable.");
-						}
-						console.log("[RobloxAI] Descripción visual recibida; ahora el modelo de texto diseñará las acciones.");
-						return cleanAnalysis;
-					})().catch((error) => {
-						visualAnalysisCache.delete(messages);
-						throw error;
-					});
-
-					visualAnalysisCache.set(messages, analysisPromise);
-					return analysisPromise;
-				}
-
-				async function pedirRespuestaEjecutable(messages, extra = "") {
-					const finalMessages = extra
-						? [...messages, { role: "user", content: extra }]
-						: messages;
-
-					const contieneImagen = finalMessages.some((message) =>
-						Array.isArray(message?.content) &&
-						message.content.some((part) =>
-							part?.type === "image_url" && typeof part.image_url?.url === "string"
-						)
-					);
-
-					if (contieneImagen && process.env.NVIDIA_API_KEY?.trim()) {
-						const analisisVisual = await analizarReferenciaVisual(messages);
-						const mensajesTextuales = finalMessages.map((message) => {
-							if (!Array.isArray(message?.content)) return message;
-							const tieneImagen = message.content.some((part) => part?.type === "image_url");
-							if (!tieneImagen) return message;
-
-							const texto = message.content
-								.filter((part) => part?.type === "text")
-								.map((part) => String(part.text || ""))
-								.join("\n")
-								.replace(/(?:^|\n)\s*@img:\s*(?:"[^"]+"|'[^']+'|[^\s]+)\s*/gi, "\n")
-								.trim();
-
-							return {
-								...message,
-								content: [
-									texto,
-									"ANÁLISIS VISUAL DE LA IMAGEN (descripción observada):",
-									analisisVisual,
-									"Usa esta descripción como referencia visual. Genera las acciones ejecutables según el contexto real del proyecto."
-								].filter(Boolean).join("\n\n")
-							};
-						});
-
-						console.log("[RobloxAI] Enviando al modelo de VFX solo texto + análisis visual; la imagen no se reenvía en la corrección.");
-						return preguntarOmniRoute(mensajesTextuales, {
-							json: true,
-							reasoningEffort: "none",
-							reasoningFormat: "hidden",
-							temperature: 0.1,
-							timeoutMs: Number(process.env.OMNIROUTE_TIMEOUT_MS || 300000),
-							attemptsPerKey: 2
-						});
-					}
-
-					if (contieneImagen && !OMNIROUTE_VISION_MODEL) {
-						throw new Error(
-							"Hay una imagen adjunta, pero no se ha configurado un modelo visual válido. " +
-							"Configura NVIDIA_API_KEY para usar la API visual directa de NVIDIA, o configura OMNIROUTE_VISION_MODEL " +
-							"con el ID exacto de un modelo con entrada de imagen que aparezca en http://127.0.0.1:20128/v1/models. " +
-							"No añadas el sufijo :free salvo que aparezca literalmente en ese catálogo."
-						);
-					}
-
-					if (contieneImagen) {
-						console.log(`🖼️ Imagen detectada. Usando modelo visual de OmniRoute: ${OMNIROUTE_VISION_MODEL}...`);
-					}
-					return preguntarOmniRoute(finalMessages, {
-						...(contieneImagen ? { model: OMNIROUTE_VISION_MODEL } : {}),
-						json: !contieneImagen,
-						reasoningEffort: "none",
-						reasoningFormat: "hidden",
-						temperature: 0.1,
-						timeoutMs: Number(process.env.OMNIROUTE_TIMEOUT_MS || 300000),
-						attemptsPerKey: 2
-					});
-				}
-
-				/*
-					* ============================================================
-					* CORRECCIÓN AUTOMÁTICA
-					* ============================================================
-					*/
-
-					async function pedirCorreccion(
-						mensajeOriginal,
-						resultadoPrueba
-					) {
-						const proyecto =
-						await obtenerContextoProyecto(
-							mensajeOriginal
-						);
-
-						const contexto =
-						construirContextoProyecto(
-							proyecto
-						);
-
-						const errors =
-						Array.isArray(
-							resultadoPrueba?.errors
-						)
-						? resultadoPrueba.errors
-						: [];
-
-						const warnings =
-						Array.isArray(
-							resultadoPrueba?.warnings
-						)
-						? resultadoPrueba.warnings
-						: [];
-
-						const prompt = [
-						"CORRECCIÓN AUTOMÁTICA DESPUÉS DE UNA PRUEBA REAL.",
-						"",
-						"PETICIÓN ORIGINAL:",
-						mensajeOriginal,
-						"",
-						"RESULTADO REAL:",
-						JSON.stringify(
-							{
-								ok:
-								resultadoPrueba?.ok,
-
-								executionOk:
-								resultadoPrueba
-								?.executionOk,
-
-								testId:
-								resultadoPrueba
-								?.testId,
-
-								errorCount:
-								resultadoPrueba
-								?.errorCount,
-
-								warningCount:
-								resultadoPrueba
-								?.warningCount,
-
-								errors:
-								errors.slice(
-									0,
-									40
-								),
-
-								warnings:
-								warnings.slice(
-									0,
-									40
-								)
-							},
-							null,
-							2
-						),
-						"",
-						contexto,
-						"",
-						"INSTRUCCIONES:",
-						"Analiza primero el SOURCE REAL.",
-						"Identifica el objeto real responsable.",
-						"Corrige el sistema existente.",
-						"NO crees un sistema nuevo.",
-						"Para update_* debes devolver SOURCE COMPLETO.",
-						"No uses get_source ni read_source.",
-						"Incluye una nueva run_studio_test.",
-						"Devuelve solamente JSON."
-						].join("\n");
-
-						const texto =
-						await preguntarOmniRoute(
-							[
-							{
-								role:
-								"system",
-								content:
-								VFX_SYSTEM
-							},
-							{
-								role:
-								"user",
-								content:
-								prompt
-							}
-							],
-							{
-								json: true,
-								reasoningEffort:
-								"none",
-								reasoningFormat:
-								"hidden",
-								temperature:
-								0.05,
-								timeoutMs:
-								Number(
-									process.env
-									.OMNIROUTE_TIMEOUT_MS ||
-									300000
-								),
-								attemptsPerKey:
-								2
-							}
-						);
-
-						return extraerResultado(
-							texto,
-							{
-								repairMode:
-								true,
-								mensajeUsuario:
-								mensajeOriginal
-							}
-						);
-						}
-
-						/*
-						* ============================================================
-						* CREACIÓN Y REFINAMIENTO DE VFX
-						* ============================================================
-						*/
-
-						async function procesarVFX(
-							mensajeUsuario,
-							soloAnalisis = false
-						) {
-							visualReviewCycles = 0;
-							lastVisualCapture = null;
-							// El refinamiento de VFX puede requerir añadir capas; no aplicar restricciones de reparación de sistemas de código.
-							const reparacion = false;
-
-							const proyecto =
-							await obtenerContextoProyecto(
-								mensajeUsuario
-							);
-
-							const contexto =
-							construirContextoProyecto(
-								proyecto
-							);
-
-							const seleccionado =
-							construirContextoSeleccionado();
-
-							const reciente =
-							crearContextoReciente(
-								6
-							);
-
-							// Las pruebas de juego no validan la apariencia de un VFX.
-							const debeProbar = false;
-
-							const modo =
-							soloAnalisis
-							? [
-							"MODO: SOLO ANÁLISIS VISUAL.",
-							"No implementes cambios.",
-							"actions debe ser []."
-							].join("\n")
-							: [
-							"MODO: CREACIÓN O REFINAMIENTO DIRECTO DE VFX.",
-							"No estás programando un sistema de juego.",
-							"Crea o modifica instancias visuales en el proyecto real de Studio.",
-							"Puedes añadir nuevas capas, piezas y Attachments si mejoran el efecto.",
-							"No crees scripts, remotes ni pruebas de juego.",
-							"Organiza el efecto bajo un Model o Folder dedicado.",
-							"No borres objetos ajenos a la petición."
-							].join("\n");
-
-															const contenido = [
-															modo,
-															"",
-															"PETICIÓN DEL USUARIO:",
-															mensajeUsuario,
-															"",
-															seccionTexturas(mensajeUsuario),
-															"",
-															"HISTORIAL:",
-							reciente ||
-							"(sin historial)",
-							"",
-							contexto,
-							"",
-							seleccionado,
-							"",
-							"VERIFICACIÓN OBLIGATORIA:",
-							"Usa el MANIFEST y el catálogo de objetos para identificar contenedores y anclajes reales.",
-							"No inspecciones ni modifiques SOURCE de scripts como sustituto del trabajo visual.",
-							"Si el usuario indica un objeto de destino, verifica que exista en el contexto antes de referenciarlo.",
-							"Si no se especifica un anclaje, crea el efecto bajo un Model dedicado en Workspace sin modificar objetos ajenos.",
-							"La respuesta será ejecutada por Roblox Studio en modo edición."
-							].join("\n");
-
-							const messages = [
-							{
-								role:
-								"system",
-								content:
-								VFX_SYSTEM
-							},
-							{
-								role:
-								"system",
-								content:
-								"MODO EJECUTOR ROBLOX."
-							},
-						{
-							role:
-							"user",
-							content:
-							contenidoConImagen(mensajeUsuario, contenido)
-						}
-						];
-
-							try {
-								console.log(
-									`🤖 OmniRoute diseñando VFX con ${OMNIROUTE_MODEL_ID}...`
-								);
-
-								if (
-									reparacion &&
-									proyecto
-									) {
-										console.log(
-											`[RobloxAI] 🔎 Contexto para reparación: ${
-											proyecto.totalScripts ??
-											(
-												Array.isArray(
-													proyecto.manifest
-												)
-												? proyecto
-												.manifest
-												.length
-												: 0
-											)
-											} scripts | ${
-											proyecto.totalObjects ??
-											(
-												Array.isArray(
-													proyecto.objects
-												)
-												? proyecto
-												.objects
-												.length
-												: 0
-											)
-											} objetos | ${
-											Array.isArray(
-												proyecto.selected
-											)
-											? proyecto
-											.selected
-											.length
-											: 0
-											} seleccionados`
-										);
-									}
-
-									let texto =
-									await pedirRespuestaEjecutable(
-										messages
-									);
-
-									let resultado =
-									extraerResultado(
-										texto,
-										{
-											repairMode:
-											reparacion,
-											soloAnalisis,
-											mensajeUsuario
-										}
-									);
-
-									if (
-										(!resultado ||
-											resultado.actions
-											.length === 0) &&
-										!soloAnalisis
-										) {
-											console.warn(
-												reparacion
-												? "⚠️ La respuesta de reparación no fue ejecutable. Exigiendo modificación de un objeto REAL."
-												: "⚠️ La primera respuesta no fue ejecutable. Pidiendo SOURCE completo y acciones válidas..."
-											);
-
-											const retry = [
-											"RESPUESTA INVÁLIDA.",
-											"No devuelvas solamente action, target o description: devuelve acciones ejecutables.",
-											"Para crear un VFX nuevo puedes crear instancias visuales nuevas; crea primero los padres y después sus hijos.",
-											"No crees scripts, remotes ni pruebas de juego.",
-											"Usa únicamente acciones de instancias y propiedades compatibles con el bridge.",
-											"No modifiques ni borres instancias existentes si no puedes identificarlas con seguridad.",
-											debeProbar
-											? "También debes incluir run_studio_test."
-											: "",
-											"Devuelve solamente JSON."
-											].join("\n");
-
-											texto =
-											await pedirRespuestaEjecutable(
-												messages,
-												retry
-											);
-
-											resultado =
-											extraerResultado(
-												texto,
-												{
-													repairMode:
-													reparacion,
-													soloAnalisis,
-													mensajeUsuario
-												}
-											);
-										}
-
-										if (!resultado) {
-											console.error(
-												"❌ OmniRoute no produjo una respuesta ejecutable válida."
-											);
-
-											return null;
+								let analysis;
+								try {
+									analysis = await preguntarNvidiaVision(visualMessages, NVIDIA_VISION_MODEL);
+								} catch (primaryError) {
+									const primaryMessage = String(primaryError?.message || primaryError);
+									const isEndpointDegraded =
+									/DEGRADED function cannot be invoked/i.test(primaryMessage) ||
+										/NVIDIA Vision HTTP 5\d\d/i.test(primaryMessage) ||
+										/Failed to generate completions/i.test(primaryMessage) ||
+										/NVIDIA Vision agotó el tiempo límite/i.test(primaryMessage) ||
+										/This operation was aborted/i.test(primaryMessage);
+										if (!isEndpointDegraded || !NVIDIA_VISION_FALLBACK_MODEL || NVIDIA_VISION_FALLBACK_MODEL === NVIDIA_VISION_MODEL) {
+											throw primaryError;
 											}
+											console.warn(
+												`[RobloxAI] Modelo visual principal no disponible; probando alternativa ${NVIDIA_VISION_FALLBACK_MODEL}...`
+											);
+											try {
+												analysis = await preguntarNvidiaVision(visualMessages, NVIDIA_VISION_FALLBACK_MODEL);
+											} catch (fallbackError) {
+												throw new Error(
+													`Fallaron ambos modelos visuales. Principal: ${primaryMessage}. Alternativa: ${String(fallbackError?.message || fallbackError)}`
+												);
+											}
+								}
 
-											if (
-												!soloAnalisis &&
-												resultado.actions.length ===
-												0
-												) {
-													console.error(
-														"❌ OmniRoute respondió sin acciones ejecutables."
-													);
+								const cleanAnalysis = String(analysis || "").trim();
+								if (!cleanAnalysis) {
+									throw new Error("El modelo visual no devolvió una descripción utilizable.");
+									}
+									console.log("[RobloxAI] Descripción visual recibida; ahora el modelo de texto diseñará las acciones.");
+									return cleanAnalysis;
+							})().catch((error) => {
+								visualAnalysisCache.delete(messages);
+								throw error;
+							});
 
-													console.log(
-														resultado.reply ||
-														"Sin explicación."
-													);
+							visualAnalysisCache.set(messages, analysisPromise);
+							return analysisPromise;
+							}
 
-													return null;
-												}
+						async function pedirRespuestaEjecutable(messages, extra = "") {
+							const finalMessages = extra
+							? [...messages, { role: "user", content: extra }]
+							: messages;
 
-												if (
-													!soloAnalisis &&
-													debeProbar &&
-													obtenerTestsDeAcciones(
-														resultado.actions
-													).length === 0
-													) {
-														console.warn(
-															"⚠️ La modificación no incluyó run_studio_test. Solicitando una versión comprobable..."
-														);
+							const contieneImagen = finalMessages.some((message) =>
+								Array.isArray(message?.content) &&
+								message.content.some((part) =>
+									part?.type === "image_url" && typeof part.image_url?.url === "string"
+								)
+							);
 
-														texto =
-														await pedirRespuestaEjecutable(
-															messages,
-															[
-															reparacion
-															? "Estás reparando un sistema existente."
-															: "Estás implementando un cambio.",
-															"Usa solamente objetos reales del contexto.",
-															"No crees scripts nuevos durante una reparación.",
-															"No inventes nombres.",
-															"Si actualizas un script devuelve SOURCE COMPLETO.",
-															"Después incluye run_studio_test.",
-															"Devuelve solamente JSON."
-															].join("\n")
-														);
+							if (contieneImagen && process.env.NVIDIA_API_KEY?.trim()) {
+								const analisisVisual = await analizarReferenciaVisual(messages);
+								const mensajesTextuales = finalMessages.map((message) => {
+									if (!Array.isArray(message?.content)) return message;
+									const tieneImagen = message.content.some((part) => part?.type === "image_url");
+									if (!tieneImagen) return message;
 
-														resultado =
-														extraerResultado(
-															texto,
-															{
-																repairMode:
-																reparacion,
-																mensajeUsuario
-															}
-														);
-													}
+										const texto = message.content
+										.filter((part) => part?.type === "text")
+										.map((part) => String(part.text || ""))
+										.join("\n")
+										.replace(/(?:^|\n)\s*@img:\s*(?:"[^"]+"|'[^']+'|[^\s]+)\s*/gi, "\n")
+	.trim();
 
-													if (!resultado) {
-														return null;
-														}
+	return {
+		...message,
+		content: [
+		texto,
+		"ANÁLISIS VISUAL DE LA IMAGEN (descripción observada):",
+		analisisVisual,
+		"Usa esta descripción como referencia visual. Genera las acciones ejecutables según el contexto real del proyecto."
+		].filter(Boolean).join("\n\n")
+	};
+	});
 
-															// Las búsquedas de texturas se resuelven en el servidor: nunca las empujes al plugin.
-															if (!soloAnalisis) {
-																const busquedas = (resultado.actions || []).filter(
-																	(accion) => accion && accion.type === "buscar_texturas"
-																);
+	console.log("[RobloxAI] Enviando al modelo de VFX solo texto + análisis visual; la imagen no se reenvía en la corrección.");
+	return preguntarOmniRoute(mensajesTextuales, {
+		json: true,
+		reasoningEffort: "none",
+		reasoningFormat: "hidden",
+		temperature: 0.1,
+		timeoutMs: Number(process.env.OMNIROUTE_TIMEOUT_MS || 300000),
+		attemptsPerKey: 2
+	});
+	}
 
-																if (busquedas.length > 0) {
-																	const respuestas = [];
+	if (contieneImagen && !OMNIROUTE_VISION_MODEL) {
+		throw new Error(
+			"Hay una imagen adjunta, pero no se ha configurado un modelo visual válido. " +
+			"Configura NVIDIA_API_KEY para usar la API visual directa de NVIDIA, o configura OMNIROUTE_VISION_MODEL " +
+			"con el ID exacto de un modelo con entrada de imagen que aparezca en http://127.0.0.1:20128/v1/models. " +
+			"No añadas el sufijo :free salvo que aparezca literalmente en ese catálogo."
+		);
+		}
 
-																	for (const busqueda of busquedas.slice(0, 2)) {
-																		// eslint-disable-next-line no-await-in-loop
-																		const texturas = await buscarTexturasVerificadas(
-																			String(busqueda.keyword || "")
-																		);
+		if (contieneImagen) {
+			console.log(`🖼️ Imagen detectada. Usando modelo visual de OmniRoute: ${OMNIROUTE_VISION_MODEL}...`);
+			}
+			return preguntarOmniRoute(finalMessages, {
+				...(contieneImagen ? { model: OMNIROUTE_VISION_MODEL } : {}),
+				json: !contieneImagen,
+				reasoningEffort: "none",
+				reasoningFormat: "hidden",
+				temperature: 0.1,
+				timeoutMs: Number(process.env.OMNIROUTE_TIMEOUT_MS || 300000),
+				attemptsPerKey: 2
+			});
+			}
 
-																		respuestas.push(
-																			textoResultadoBusquedaTexturas(
-																				String(busqueda.keyword || ""),
-																				texturas
-																			)
-																		);
-																	}
+			/*
+			* ============================================================
+			* CORRECCIÓN AUTOMÁTICA
+			* ============================================================
+			*/
 
-																	texto = await pedirRespuestaEjecutable(
-																		messages,
-																		[
-																		"RESULTADO DE LA BÚSQUEDA DE TEXTURAS EN EL CATÁLOGO DE ROBLOX (ids comprobados en Studio con ContentProvider):",
-																		...respuestas,
-																		"",
-																		"Usa SOLO los ids listados arriba o los del CATÁLOGO DE TEXTURAS VERIFICADAS del contexto.",
-																		"No inventes ningún id de textura.",
-																		"No vuelvas a emitir acciones buscar_texturas.",
-																		"Devuelve solamente JSON."
-																		].join("\n")
-																	);
+			async function pedirCorreccion(
+		mensajeOriginal,
+		resultadoPrueba
+	) {
+		const proyecto =
+		await obtenerContextoProyecto(
+			mensajeOriginal
+		);
 
-																	resultado = extraerResultado(
-																		texto,
-																		{
-																			repairMode:
-																			reparacion,
-																			soloAnalisis,
-																			mensajeUsuario
-																		}
-																	);
+		const contexto =
+		construirContextoProyecto(
+			proyecto
+		);
 
-																	if (!resultado) {
-																		return null;
-																		}
-																	}
-																}
+		const errors =
+		Array.isArray(
+			resultadoPrueba?.errors
+		)
+		? resultadoPrueba.errors
+		: [];
 
-																resultado.actions = (resultado.actions || []).filter(
-				(accion) => !accion || accion.type !== "buscar_texturas"
+		const warnings =
+		Array.isArray(
+			resultadoPrueba?.warnings
+		)
+		? resultadoPrueba.warnings
+		: [];
+
+		const prompt = [
+		"CORRECCIÓN AUTOMÁTICA DESPUÉS DE UNA PRUEBA REAL.",
+		"",
+		"PETICIÓN ORIGINAL:",
+		mensajeOriginal,
+		"",
+		"RESULTADO REAL:",
+		JSON.stringify(
+			{
+				ok:
+				resultadoPrueba?.ok,
+
+				executionOk:
+				resultadoPrueba
+				?.executionOk,
+
+				testId:
+				resultadoPrueba
+				?.testId,
+
+				errorCount:
+				resultadoPrueba
+				?.errorCount,
+
+				warningCount:
+				resultadoPrueba
+				?.warningCount,
+
+				errors:
+				errors.slice(
+					0,
+					40
+				),
+
+				warnings:
+				warnings.slice(
+					0,
+					40
+				)
+			},
+			null,
+			2
+		),
+		"",
+		contexto,
+		"",
+		"INSTRUCCIONES:",
+		"Analiza primero el SOURCE REAL.",
+		"Identifica el objeto real responsable.",
+		"Corrige el sistema existente.",
+		"NO crees un sistema nuevo.",
+		"Para update_* debes devolver SOURCE COMPLETO.",
+		"No uses get_source ni read_source.",
+		"Incluye una nueva run_studio_test.",
+		"Devuelve solamente JSON."
+		].join("\n");
+
+		const texto =
+		await preguntarOmniRoute(
+			[
+			{
+				role:
+				"system",
+				content:
+				VFX_SYSTEM
+			},
+			{
+				role:
+				"user",
+				content:
+				prompt
+			}
+			],
+			{
+				json: true,
+				reasoningEffort:
+				"none",
+				reasoningFormat:
+				"hidden",
+				temperature:
+				0.05,
+				timeoutMs:
+				Number(
+					process.env
+					.OMNIROUTE_TIMEOUT_MS ||
+					300000
+				),
+				attemptsPerKey:
+				2
+			}
+		);
+
+		return extraerResultado(
+			texto,
+			{
+				repairMode:
+				true,
+				mensajeUsuario:
+				mensajeOriginal
+			}
+		);
+		}
+
+		/*
+		* ============================================================
+		* CREACIÓN Y REFINAMIENTO DE VFX
+		* ============================================================
+		*/
+
+		async function procesarVFX(
+			mensajeUsuario,
+			soloAnalisis = false
+		) {
+			visualReviewCycles = 0;
+			lastVisualCapture = null;
+			// El refinamiento de VFX puede requerir añadir capas; no aplicar restricciones de reparación de sistemas de código.
+			const reparacion = false;
+
+			const proyecto =
+			await obtenerContextoProyecto(
+				mensajeUsuario
 			);
 
-			// Si Studio aún no recogió una verificación de texturas, no la pierdas:
-			// un id sin verificar deja el efecto invisible.
-			const verificacionesPendientes = pendingActions.filter(
-				(accion) => accion && accion.type === "verify_textures"
+			const contexto =
+			construirContextoProyecto(
+				proyecto
 			);
 
-			pendingActions = [
-				...verificacionesPendientes,
-				...resultado.actions
+			const seleccionado =
+			construirContextoSeleccionado();
+
+			const reciente =
+			crearContextoReciente(
+				6
+			);
+
+			// Las pruebas de juego no validan la apariencia de un VFX.
+			const debeProbar = false;
+
+			const modo =
+			soloAnalisis
+			? [
+			"MODO: SOLO ANÁLISIS VISUAL.",
+			"No implementes cambios.",
+			"actions debe ser []."
+			].join("\n")
+			: [
+			"MODO: CREACIÓN O REFINAMIENTO DIRECTO DE VFX.",
+			"No estás programando un sistema de juego.",
+			"Crea o modifica instancias visuales en el proyecto real de Studio.",
+			"Puedes añadir nuevas capas, piezas y Attachments si mejoran el efecto.",
+			"No crees scripts, remotes ni pruebas de juego.",
+			"Organiza el efecto bajo un Model o Folder dedicado.",
+			"No borres objetos ajenos a la petición."
+			].join("\n");
+
+			const contenido = [
+			modo,
+			"",
+			"PETICIÓN DEL USUARIO:",
+			mensajeUsuario,
+			"",
+			seccionTexturas(mensajeUsuario),
+			"",
+			"HISTORIAL:",
+			reciente ||
+			"(sin historial)",
+			"",
+			contexto,
+			"",
+			seleccionado,
+			"",
+			"VERIFICACIÓN OBLIGATORIA:",
+			"Usa el MANIFEST y el catálogo de objetos para identificar contenedores y anclajes reales.",
+			"No inspecciones ni modifiques SOURCE de scripts como sustituto del trabajo visual.",
+			"Si el usuario indica un objeto de destino, verifica que exista en el contexto antes de referenciarlo.",
+			"Si no se especifica un anclaje, crea el efecto bajo un Model dedicado en Workspace sin modificar objetos ajenos.",
+			"La respuesta será ejecutada por Roblox Studio en modo edición."
+			].join("\n");
+
+			const messages = [
+			{
+				role:
+				"system",
+				content:
+				VFX_SYSTEM
+			},
+			{
+				role:
+				"system",
+				content:
+				"MODO EJECUTOR ROBLOX."
+			},
+			{
+				role:
+				"user",
+				content:
+				contenidoConImagen(mensajeUsuario, contenido)
+			}
 			];
 
-														registrarTests(
-															mensajeUsuario,
-															pendingActions,
-															1
-														);
+			try {
+				console.log(
+					`🤖 OmniRoute diseñando VFX con ${OMNIROUTE_MODEL_ID}...`
+				);
 
-														agregarHistorial(
-															"user",
-															mensajeUsuario
-														);
+				if (
+					reparacion &&
+					proyecto
+					) {
+						console.log(
+							`[RobloxAI] 🔎 Contexto para reparación: ${
+							proyecto.totalScripts ??
+							(
+								Array.isArray(
+									proyecto.manifest
+								)
+								? proyecto
+								.manifest
+								.length
+								: 0
+							)
+							} scripts | ${
+							proyecto.totalObjects ??
+							(
+								Array.isArray(
+									proyecto.objects
+								)
+								? proyecto
+								.objects
+								.length
+								: 0
+							)
+							} objetos | ${
+							Array.isArray(
+								proyecto.selected
+							)
+							? proyecto
+							.selected
+							.length
+							: 0
+							} seleccionados`
+						);
+					}
 
-														agregarHistorial(
-															"assistant",
-															resultado.reply ||
-															`Se prepararon ${resultado.actions.length} acciones.`
-														);
+					let texto =
+					await pedirRespuestaEjecutable(
+						messages
+					);
 
-														console.log(
-															`✅ OmniRoute terminó: ${pendingActions.length} acción(es) listas para Roblox Studio.`
-														);
+					let resultado =
+					extraerResultado(
+						texto,
+						{
+							repairMode:
+							reparacion,
+							soloAnalisis,
+							mensajeUsuario
+						}
+					);
 
-														console.log(
-															resultado.reply ||
-															"Cambios preparados."
-														);
+					if (
+						(!resultado ||
+							resultado.actions
+							.length === 0) &&
+						!soloAnalisis
+						) {
+							console.warn(
+								reparacion
+								? "⚠️ La respuesta de reparación no fue ejecutable. Exigiendo modificación de un objeto REAL."
+								: "⚠️ La primera respuesta no fue ejecutable. Pidiendo SOURCE completo y acciones válidas..."
+							);
 
-														return resultado;
-							} catch (error) {
-								console.error(
-									"❌ Error de OmniRoute:",
-									error instanceof Error
-									? error.message
-									: String(error)
-								);
+							const retry = [
+							"RESPUESTA INVÁLIDA.",
+							"No devuelvas solamente action, target o description: devuelve acciones ejecutables.",
+							"Para crear un VFX nuevo puedes crear instancias visuales nuevas; crea primero los padres y después sus hijos.",
+							"No crees scripts, remotes ni pruebas de juego.",
+							"Usa únicamente acciones de instancias y propiedades compatibles con el bridge.",
+							"No modifiques ni borres instancias existentes si no puedes identificarlas con seguridad.",
+							debeProbar
+							? "También debes incluir run_studio_test."
+							: "",
+							"Devuelve solamente JSON."
+							].join("\n");
 
-								return null;
+							texto =
+							await pedirRespuestaEjecutable(
+								messages,
+								retry
+							);
+
+							resultado =
+							extraerResultado(
+								texto,
+								{
+									repairMode:
+									reparacion,
+									soloAnalisis,
+									mensajeUsuario
+								}
+							);
+						}
+
+						if (!resultado) {
+							console.error(
+								"❌ OmniRoute no produjo una respuesta ejecutable válida."
+							);
+
+							return null;
 							}
-							}
 
-							/*
-							* ============================================================
-							* CHAT
-							* ============================================================
-							*/
-
-							async function responderChat(
-								mensajeUsuario
-							) {
-								try {
-									const texto =
-									await preguntarOmniRoute(
-										[
-										{
-											role:
-											"system",
-											content:
-											CHAT_SYSTEM
-										},
-
-										...historial
-										.slice(-8)
-										.map(
-											(m) => ({
-												role:
-												m.role,
-												content:
-												m.text
-											})
-										),
-
-										{
-											role:
-											"user",
-											content:
-											mensajeUsuario
-										}
-										],
-										{
-											reasoningEffort:
-											process.env
-											.OMNIROUTE_REASONING_EFFORT ||
-											"default",
-
-											reasoningFormat:
-											"hidden",
-
-											temperature:
-											0.5,
-
-
-											attemptsPerKey:
-											1
-										}
-									);
-
-									agregarHistorial(
-										"user",
-										mensajeUsuario
-									);
-
-									agregarHistorial(
-										"assistant",
-										texto
+							if (
+								!soloAnalisis &&
+								resultado.actions.length ===
+								0
+								) {
+									console.error(
+										"❌ OmniRoute respondió sin acciones ejecutables."
 									);
 
 									console.log(
-										`\n${texto}`
-									);
-
-									return texto;
-								} catch (error) {
-									console.error(
-										"❌ Error de OmniRoute:",
-										error instanceof Error
-										? error.message
-										: String(error)
+										resultado.reply ||
+										"Sin explicación."
 									);
 
 									return null;
 								}
-								}
 
-								/*
-								* ============================================================
-								* API
-								* ============================================================
-								*/
+								if (
+									!soloAnalisis &&
+									debeProbar &&
+									obtenerTestsDeAcciones(
+										resultado.actions
+									).length === 0
+									) {
+										console.warn(
+											"⚠️ La modificación no incluyó run_studio_test. Solicitando una versión comprobable..."
+										);
 
-								app.get(
-									"/",
-									(_req, res) => {
-										res.json({
-											ok: true,
+										texto =
+										await pedirRespuestaEjecutable(
+											messages,
+											[
+											reparacion
+											? "Estás reparando un sistema existente."
+											: "Estás implementando un cambio.",
+											"Usa solamente objetos reales del contexto.",
+											"No crees scripts nuevos durante una reparación.",
+											"No inventes nombres.",
+											"Si actualizas un script devuelve SOURCE COMPLETO.",
+											"Después incluye run_studio_test.",
+											"Devuelve solamente JSON."
+											].join("\n")
+										);
 
-											service:
-											"Roblox AI Bridge",
-
-											provider:
-											"OmniRoute",
-
-											model:
-											OMNIROUTE_MODEL_ID,
-
-											capabilities: [
-											"vfx-authoring",
-											"particle-emitters",
-											"beams-trails-attachments",
-											"typed-visual-properties",
-											"number-color-sequences",
-											"direct-studio-instance-editing",
-											"organized-vfx-hierarchy",
-											"project-context"
-											],
-
-											pendingActions:
-											pendingActions.length,
-
-											lastExecutionReport,
-
-											activeTests:
-											activeTestJobs.size
-										});
+										resultado =
+										extraerResultado(
+											texto,
+											{
+												repairMode:
+												reparacion,
+												mensajeUsuario
+											}
+										);
 									}
-								);
 
-								async function evaluarCapturaVFX(report) {
-									if (!lastVisualCapture || visualReviewCycles >= MAX_VISUAL_REVIEW_CYCLES) return;
-									if (Date.now() - lastVisualCapture.receivedAt > 90000) return;
+									if (!resultado) {
+										return null;
+										}
 
-										visualReviewCycles += 1;
-										const capture = lastVisualCapture;
-										const prompt = [
-										"REVISIÓN VISUAL DEL EFECTO EN ROBLOX STUDIO.",
-										"La imagen adjunta es una captura real del viewport actual.",
-										"Evalúa solo lo que realmente se ve: silueta, composición, capas, contraste, escala, profundidad, legibilidad y objetos fuera de lugar.",
-										"Si el efecto ya se ve coherente, devuelve actions: [].",
-										"Si necesita mejoras, aplica cambios pequeños y concretos con acciones de instancias/propiedades; no crees scripts, remotes ni pruebas de juego.",
-										"No borres objetos. No inventes detalles que no aparezcan en la captura.",
-										`Resultado estructural reportado por Studio: ${report.successful} acciones correctas y ${report.failed} fallidas.`,
-										"Devuelve JSON válido con reply y actions."
-										].join("\n");
+										// Las búsquedas de texturas se resuelven en el servidor: nunca las empujes al plugin.
+										const modelosParaInsertar = [];
+										if (!soloAnalisis) {
+										const busquedas = (resultado.actions || []).filter(
+											(accion) => accion && accion.type === "buscar_texturas"
+										);
 
-										try {
-											const texto = await preguntarOmniRoute(
-												[
-												{ role: "system", content: VFX_SYSTEM },
-												{
-													role: "user",
-													content: [
-													{ type: "text", text: prompt },
-													{ type: "image_url", image_url: { url: capture.dataUrl } }
-													]
+										// Los modelos que traigamos del catálogo los empuja el bridge,
+										// nunca el modelo: así nadie puede inventar un assetId.
+
+										if (busquedas.length > 0) {
+											const respuestas = [];
+
+											for (const busqueda of busquedas.slice(0, 2)) {
+												// eslint-disable-next-line no-await-in-loop
+												const tipo = String(busqueda.tipo || "textura");
+												const resultados = await buscarTexturasVerificadas(
+													String(busqueda.keyword || ""),
+													tipo
+												);
+
+												respuestas.push(
+													textoResultadoBusquedaTexturas(
+														String(busqueda.keyword || ""),
+														resultados,
+														tipo
+													)
+												);
+
+												/*
+												* Los modelos del catálogo se insertan en Studio desde
+												* el bridge, con un assetId que ya vino del catálogo.
+												*/
+												if (tipo === "modelo" && resultados && resultados.length > 0) {
+													modelosParaInsertar.push(resultados[0]);
+													}
 												}
-												],
-												{
-													json: true,
-													reasoningEffort: "none",
-													reasoningFormat: "hidden",
-													temperature: 0.1,
-													timeoutMs: Math.min(Number(process.env.OMNIROUTE_TIMEOUT_MS || 120000), 120000),
-													attemptsPerKey: 1
+
+													texto = await pedirRespuestaEjecutable(
+														messages,
+														[
+														"RESULTADO DE LA BÚSQUEDA DE TEXTURAS EN EL CATÁLOGO DE ROBLOX (ids comprobados en Studio con ContentProvider):",
+														...respuestas,
+														"",
+														"Usa SOLO los ids listados arriba o los del CATÁLOGO DE TEXTURAS VERIFICADAS del contexto.",
+														"No inventes ningún id de textura.",
+														"No vuelvas a emitir acciones buscar_texturas.",
+														"Devuelve solamente JSON."
+														].join("\n")
+													);
+
+													resultado = extraerResultado(
+														texto,
+														{
+															repairMode:
+															reparacion,
+															soloAnalisis,
+															mensajeUsuario
+														}
+													);
+
+													if (!resultado) {
+														return null;
+														}
+														}
 												}
+
+											resultado.actions = (resultado.actions || []).filter(
+												(accion) => !accion || accion.type !== "buscar_texturas"
 											);
 
-											const result = extraerResultado(texto, {
-												repairMode: false,
-												soloAnalisis: false,
-												mensajeUsuario: "Revisión visual automática del VFX; no borrar objetos."
-											});
+											// Si Studio aún no recogió una verificación de texturas, no la pierdas:
+											// un id sin verificar deja el efecto invisible.
+											const verificacionesPendientes = pendingActions.filter(
+												(accion) => accion && accion.type === "verify_textures"
+											);
 
-											if (!result || result.actions.length === 0) {
-												console.log("[RobloxAI] Revisión visual completada: no se solicitaron más cambios.");
-												return;
-												}
+										pendingActions = [
+										...verificacionesPendientes,
+										...resultado.actions
+										];
 
-												pendingActions = result.actions;
-												console.log(`[RobloxAI] Revisión visual ${visualReviewCycles}/${MAX_VISUAL_REVIEW_CYCLES}: ${pendingActions.length} ajuste(s) listos para Studio.`);
-												console.log(result.reply || "Ajustes visuales preparados.");
-										} catch (error) {
-											console.warn("[RobloxAI] No se pudo evaluar la captura con el modelo configurado. Puede que el modelo seleccionado no admita imágenes:", error instanceof Error ? error.message : String(error));
-										}
-										}
-
-									app.post(
-										"/visual-capture",
-										(req, res) => {
-											const data = req.body || {};
-											const imageBase64 = String(data.imageBase64 || "");
-											if (!imageBase64 || imageBase64.length > 6000000 || !/^[A-Za-z0-9+/=]+$/.test(imageBase64)) {
-												return res.status(400).json({ ok: false, error: "Captura PNG vacía, demasiado grande o inválida." });
-												}
-												lastVisualCapture = {
-													dataUrl: `data:image/png;base64,${imageBase64}`,
-													receivedAt: Date.now(),
-													resolution: data.resolution || null
-												};
-												console.log("[RobloxAI] Captura visual recibida desde Studio.");
-												return res.json({ ok: true });
-										}
-									);
-									app.post(
-										"/execution-results",
-										(req, res) => {
-											const data = req.body || {};
-											const actions = Array.isArray(data.actions) ? data.actions.slice(0, 200) : [];
-											lastExecutionReport = {
-												receivedAt: new Date().toISOString(),
-												requested: Math.max(0, Number(data.requested) || actions.length),
-												successful: Math.max(0, Number(data.successful) || 0),
-												failed: Math.max(0, Number(data.failed) || 0),
-												actions
-											};
-											console.log(`[RobloxAI] Resultado Studio: ${lastExecutionReport.successful} correctas | ${lastExecutionReport.failed} fallidas.`);
-											res.json({ ok: true });
-											if (lastExecutionReport.successful > 0 && lastVisualCapture) {
-												void evaluarCapturaVFX(lastExecutionReport);
-												}
-										}
-									);
-
-									app.post(
-										"/texture-catalog",
-										(req, res) => {
-											const data = req.body || {};
-											const texturas = Array.isArray(data.textures) ? data.textures.slice(0, 800) : [];
-
-											catalogoTexturasProyecto = texturas
-											.map((textura) => ({
-												id: normalizarIdTextura(textura && textura.id),
-												nombre: String((textura && (textura.nombre || textura.origen)) || ""),
-												categoria: String((textura && textura.categoria) || "Proyecto")
-											}))
-											.filter((textura) => textura.id);
-
-											cacheTexturas.project = catalogoTexturasProyecto;
-											guardarCacheTexturas(cacheTexturas);
-
+										if (modelosParaInsertar.length > 0) {
 											console.log(
-												`[RobloxAI] 📚 Catálogo de texturas recibido: ${catalogoTexturasProyecto.length} textura(s).`
+												`[RobloxAI] Insertando ${modelosParaInsertar.length} modelo(s) del catálogo de Roblox.`
 											);
-											res.json({ ok: true, total: catalogoTexturasProyecto.length });
-										}
-									);
 
-									app.post(
-										"/texture-validation",
-										(req, res) => {
-											const data = req.body || {};
-											const requestId = String(data.requestId || data.request_id || "");
-											const espera = esperasTexturas.get(requestId);
-											const resultados = Array.isArray(data.results)
-											? data.results
-											: Array.isArray(data.textures)
-											? data.textures
-											: [];
-
-											if (!espera) {
-												return res.json({ ok: true, ignorado: true });
+											pendingActions = [
+											...pendingActions,
+											...modelosParaInsertar.map(
+												(modelo) => ({
+												type: "insertar_modelo",
+												assetId: String(modelo.id),
+												nombre: String(modelo.nombre || `Catalogo_${modelo.id}`),
+												path: "Workspace/VFXCatalogo"
+												})
+											)
+											];
 											}
 
-											esperasTexturas.delete(requestId);
-											espera(resultados.slice(0, 200));
+											registrarTests(
+												mensajeUsuario,
+												pendingActions,
+												1
+											);
+
+											agregarHistorial(
+												"user",
+												mensajeUsuario
+											);
+
+											agregarHistorial(
+												"assistant",
+												resultado.reply ||
+												`Se prepararon ${resultado.actions.length} acciones.`
+											);
 
 											console.log(
-												`[RobloxAI] 🔎 Studio confirmó la carga de ${resultados.length} textura(s).`
+												`✅ OmniRoute terminó: ${pendingActions.length} acción(es) listas para Roblox Studio.`
 											);
-											res.json({ ok: true });
-										}
+
+											console.log(
+												resultado.reply ||
+												"Cambios preparados."
+											);
+
+											return resultado;
+			} catch (error) {
+				console.error(
+					"❌ Error de OmniRoute:",
+					error instanceof Error
+					? error.message
+					: String(error)
+				);
+
+				return null;
+			}
+			}
+
+			/*
+			* ============================================================
+			* CHAT
+			* ============================================================
+			*/
+
+			async function responderChat(
+				mensajeUsuario
+			) {
+				try {
+					const texto =
+					await preguntarOmniRoute(
+						[
+						{
+							role:
+							"system",
+							content:
+							CHAT_SYSTEM
+						},
+
+						...historial
+						.slice(-8)
+						.map(
+							(m) => ({
+								role:
+								m.role,
+								content:
+								m.text
+							})
+						),
+
+						{
+							role:
+							"user",
+							content:
+							mensajeUsuario
+						}
+						],
+						{
+							reasoningEffort:
+							process.env
+							.OMNIROUTE_REASONING_EFFORT ||
+							"default",
+
+							reasoningFormat:
+							"hidden",
+
+							temperature:
+							0.5,
+
+
+							attemptsPerKey:
+							1
+						}
+					);
+
+					agregarHistorial(
+						"user",
+						mensajeUsuario
+					);
+
+					agregarHistorial(
+						"assistant",
+						texto
+					);
+
+					console.log(
+						`\n${texto}`
+					);
+
+					return texto;
+				} catch (error) {
+					console.error(
+						"❌ Error de OmniRoute:",
+						error instanceof Error
+						? error.message
+						: String(error)
+					);
+
+					return null;
+				}
+				}
+
+				/*
+				* ============================================================
+				* API
+				* ============================================================
+				*/
+
+				app.get(
+					"/",
+					(_req, res) => {
+						res.json({
+							ok: true,
+
+							service:
+							"Roblox AI Bridge",
+
+							provider:
+							"OmniRoute",
+
+							model:
+							OMNIROUTE_MODEL_ID,
+
+							capabilities: [
+							"vfx-authoring",
+							"particle-emitters",
+							"beams-trails-attachments",
+							"typed-visual-properties",
+							"number-color-sequences",
+							"direct-studio-instance-editing",
+							"organized-vfx-hierarchy",
+							"project-context"
+							],
+
+							pendingActions:
+							pendingActions.length,
+
+							lastExecutionReport,
+
+							activeTests:
+							activeTestJobs.size
+						});
+					}
+				);
+
+				async function evaluarCapturaVFX(report) {
+					if (!lastVisualCapture || visualReviewCycles >= MAX_VISUAL_REVIEW_CYCLES) return;
+					if (Date.now() - lastVisualCapture.receivedAt > 90000) return;
+
+						visualReviewCycles += 1;
+						const capture = lastVisualCapture;
+						const prompt = [
+						"REVISIÓN VISUAL DEL EFECTO EN ROBLOX STUDIO.",
+						`Resultado estructural reportado por Studio: ${report.successful} acciones correctas y ${report.failed} fallidas.`,
+						"Compara el resultado construido con la imagen de referencia y corrige SOLO lo que no coincida.",
+						"Si el efecto ya se ve coherente con la referencia, devuelve actions: [].",
+						"Si necesita mejoras, aplica cambios pequeños y concretos con acciones de instancias/propiedades; no crees scripts, remotes ni pruebas de juego.",
+						"No borres objetos. No inventes detalles que no aparezcan en la captura.",
+						"Devuelve JSON válido con reply y actions."
+						].join("\n");
+
+						let diagnostico = "";
+						try {
+							const referencia = referenciaVisualActual;
+							if (referencia) {
+								const instrucciones = [
+								"Eres un revisor técnico de VFX para Roblox Studio.",
+								"Recibes DOS imágenes: la primera es el resultado construido en Studio ahora, la segunda es la imagen de referencia original que hay que replicar.",
+								`PROCEDENCIA DE LA IMAGEN DE STUDIO: ${capture.tipo}. ${capture.nota || ""}`,
+								"Si la procedencia es 'proyeccion', esa imagen NO es una foto del render: es la geometria real del efecto proyectada sobre el plano de la camara. Juzga silueta, numero de capas, radios, proporciones, posiciones, colores y brillo; no hables de sombras, texturas, reflejos ni oclusiones.",
+								"Compara silueta, numero de capas, proporciones relativas, plano, paleta, brillo y partículas.",
+								"Termina con una lista concreta de diferencias reales y, en cada una, el ajuste exacto que habría que hacer en Studio."
+								].join("\n");
+								const comparacionMensajes = [
+									{ role: "system", content: instrucciones },
+									{
+										role: "user",
+										content: [
+										{ type: "text", text: "Compara el resultado (primera imagen) con la referencia (segunda imagen)." },
+										{ type: "image_url", image_url: { url: capture.dataUrl } },
+										{ type: "image_url", image_url: { url: referencia } }
+										]
+									}
+								];
+								let comparacion;
+								try {
+									comparacion = await preguntarNvidiaVision(comparacionMensajes);
+								} catch (primaryError) {
+									if (!NVIDIA_VISION_FALLBACK_MODEL || NVIDIA_VISION_FALLBACK_MODEL === NVIDIA_VISION_MODEL) throw primaryError;
+										console.warn(`[RobloxAI] Revisión visual: el modelo principal falló; probando alternativa ${NVIDIA_VISION_FALLBACK_MODEL}...`);
+										comparacion = await preguntarNvidiaVision(comparacionMensajes, NVIDIA_VISION_FALLBACK_MODEL);
+								}
+								diagnostico = [
+								"DIAGNÓSTICO AUTOMÁTICO (captura real del viewport comparada con la imagen de referencia original):",
+								comparacion,
+								"Corrige SOLO lo que este diagnóstico marque como diferencia real; si ya coincide, devuelve actions: []."
+								].join("\n\n");
+								console.log("[RobloxAI] Diagnóstico visual recibido; se pasa al constructor de acciones.");
+							} else {
+								console.log("[RobloxAI] Sin imagen de referencia guardada; la revisión usa solo la captura.");
+							}
+						} catch (error) {
+							console.warn(
+								"[RobloxAI] No se pudo comparar la captura con la referencia:",
+								error instanceof Error ? error.message : String(error)
+							);
+						}
+
+						try {
+							const texto = await preguntarOmniRoute(
+								[
+								{ role: "system", content: VFX_SYSTEM },
+								{
+									role: "user",
+									content: [
+									{ type: "text", text: [prompt, diagnostico].filter(Boolean).join("\n\n") }
+									]
+								}
+								],
+								{
+									json: true,
+									reasoningEffort: "none",
+									reasoningFormat: "hidden",
+									temperature: 0.1,
+									timeoutMs: Math.min(Number(process.env.OMNIROUTE_TIMEOUT_MS || 120000), 120000),
+									attemptsPerKey: 1
+								}
+							);
+
+							const result = extraerResultado(texto, {
+								repairMode: false,
+								soloAnalisis: false,
+								mensajeUsuario: "Revisión visual automática del VFX; no borrar objetos."
+							});
+
+							if (!result || result.actions.length === 0) {
+								console.log("[RobloxAI] Revisión visual completada: no se solicitaron más cambios.");
+								return;
+								}
+
+								pendingActions = result.actions;
+								console.log(`[RobloxAI] Revisión visual ${visualReviewCycles}/${MAX_VISUAL_REVIEW_CYCLES}: ${pendingActions.length} ajuste(s) listos para Studio.`);
+								console.log(result.reply || "Ajustes visuales preparados.");
+						} catch (error) {
+							console.warn("[RobloxAI] No se pudo evaluar la captura con el modelo configurado. Puede que el modelo seleccionado no admita imágenes:", error instanceof Error ? error.message : String(error));
+						}
+						}
+
+					app.post(
+						"/visual-capture",
+						(req, res) => {
+							const data = req.body || {};
+							const imageBase64 = String(data.imageBase64 || "");
+							if (!imageBase64 || imageBase64.length > 6000000 || !/^[A-Za-z0-9+/=]+$/.test(imageBase64)) {
+								return res.status(400).json({ ok: false, error: "Captura PNG vacía, demasiado grande o inválida." });
+								}
+								lastVisualCapture = {
+									dataUrl: `data:image/png;base64,${imageBase64}`,
+									receivedAt: Date.now(),
+									resolution: data.resolution || null,
+									tipo: typeof data.tipo === "string" ? data.tipo : "desconocido",
+									nota: typeof data.nota === "string" ? data.nota.slice(0, 400) : ""
+								};
+								console.log(`[RobloxAI] Imagen de revision recibida desde Studio (tipo: ${lastVisualCapture.tipo}).`);
+								return res.json({ ok: true });
+						}
+					);
+					app.post(
+						"/execution-results",
+						(req, res) => {
+							const data = req.body || {};
+							const actions = Array.isArray(data.actions) ? data.actions.slice(0, 200) : [];
+							lastExecutionReport = {
+								receivedAt: new Date().toISOString(),
+								requested: Math.max(0, Number(data.requested) || actions.length),
+								successful: Math.max(0, Number(data.successful) || 0),
+								failed: Math.max(0, Number(data.failed) || 0),
+								actions
+							};
+							console.log(`[RobloxAI] Resultado Studio: ${lastExecutionReport.successful} correctas | ${lastExecutionReport.failed} fallidas.`);
+							res.json({ ok: true });
+							if (lastExecutionReport.successful > 0 && lastVisualCapture) {
+								void evaluarCapturaVFX(lastExecutionReport);
+								}
+						}
+					);
+
+					app.post(
+						"/texture-catalog",
+						(req, res) => {
+							const data = req.body || {};
+							const texturas = Array.isArray(data.textures) ? data.textures.slice(0, 800) : [];
+
+							catalogoTexturasProyecto = texturas
+							.map((textura) => ({
+								id: normalizarIdTextura(textura && textura.id),
+								nombre: String((textura && (textura.nombre || textura.origen)) || ""),
+								categoria: String((textura && textura.categoria) || "Proyecto")
+							}))
+							.filter((textura) => textura.id);
+
+							cacheTexturas.project = catalogoTexturasProyecto;
+							guardarCacheTexturas(cacheTexturas);
+
+							console.log(
+								`[RobloxAI] 📚 Catálogo de texturas recibido: ${catalogoTexturasProyecto.length} textura(s).`
+							);
+							res.json({ ok: true, total: catalogoTexturasProyecto.length });
+						}
+					);
+
+					app.post(
+						"/texture-validation",
+						(req, res) => {
+							const data = req.body || {};
+							const requestId = String(data.requestId || data.request_id || "");
+							const espera = esperasTexturas.get(requestId);
+							const resultados = Array.isArray(data.results)
+							? data.results
+							: Array.isArray(data.textures)
+							? data.textures
+							: [];
+
+							if (!espera) {
+								return res.json({ ok: true, ignorado: true });
+								}
+
+								esperasTexturas.delete(requestId);
+								espera(resultados.slice(0, 200));
+
+								console.log(
+									`[RobloxAI] 🔎 Studio confirmó la carga de ${resultados.length} textura(s).`
+								);
+								res.json({ ok: true });
+						}
+					);
+
+					app.get(
+						"/health",
+						(_req, res) => {
+							const keys =
+							String(
+								process.env
+								.OMNIROUTE_API_KEY ||
+								""
+							)
+							.split(",")
+							.map(
+								(key) =>
+								key.trim()
+							)
+							.filter(Boolean);
+
+							const individual =
+							String(
+								process.env
+								.OMNIROUTE_API_KEY ||
+								""
+							).trim();
+
+							if (
+								individual &&
+								!keys.includes(
+									individual
+								)
+								) {
+									keys.unshift(
+										individual
+									);
+								}
+
+								res.json({
+									ok: true,
+
+									omnirouteConfigured:
+									keys.length > 0,
+
+									omnirouteKeys:
+									keys.length,
+
+									provider:
+									"OmniRoute",
+
+									model:
+									OMNIROUTE_MODEL_ID,
+
+									reasoningEffort:
+									OMNIROUTE_CONFIG
+									.reasoningEffort,
+
+									pendingActions:
+									pendingActions.length,
+
+									storedTestResults:
+									testResults.size,
+
+									activeTests:
+									activeTestJobs.size
+								});
+						}
+					);
+
+					app.get(
+						"/next",
+						(_req, res) => {
+							const actions =
+							pendingActions;
+
+							pendingActions = [];
+
+							res.json({
+								actions
+							});
+						}
+					);
+
+					/*
+					* ============================================================
+					* RESULTADOS DE TEST
+					* ============================================================
+					*/
+
+					app.post(
+						"/test-results",
+						async (req, res) => {
+							try {
+								const data =
+								req.body || {};
+
+								const testId =
+								String(
+									data.testId ||
+									""
+								).trim();
+
+								if (!testId) {
+									return res
+									.status(400)
+									.json({
+										ok: false,
+										error:
+										"Falta testId"
+									});
+									}
+
+									const result = {
+										...data,
+
+										testId,
+
+										receivedAt:
+										new Date()
+										.toISOString()
+									};
+
+									testResults.set(
+										testId,
+										result
 									);
 
-									app.get(
-										"/health",
-										(_req, res) => {
-											const keys =
-											String(
-												process.env
-												.OMNIROUTE_API_KEY ||
-												""
-											)
-											.split(",")
-											.map(
-												(key) =>
-												key.trim()
-											)
-											.filter(Boolean);
+									const errorCount =
+									Array.isArray(
+										data.errors
+									)
+									? data.errors.length
+									: 0;
 
-											const individual =
-											String(
-												process.env
-												.OMNIROUTE_API_KEY ||
-												""
-											).trim();
+									const warningCount =
+									Array.isArray(
+										data.warnings
+									)
+									? data.warnings.length
+									: 0;
+
+									console.log(
+										`[RobloxAI] 🧪 Resultado recibido: ${testId}`
+									);
+
+									console.log(
+										`[RobloxAI] Estado: ${Boolean(
+											data.ok
+										)}`
+									);
+
+									console.log(
+										`[RobloxAI] Errores: ${errorCount}`
+									);
+
+									console.log(
+										`[RobloxAI] Warnings: ${warningCount}`
+									);
+
+									const job =
+									activeTestJobs.get(
+										testId
+									);
+
+									if (!job) {
+										console.warn(
+											`[RobloxAI] ⚠️ Test no registrado: ${testId}`
+										);
+
+										return res.json({
+											ok: true,
+											received:
+											true,
+											testId,
+											tracked:
+											false
+										});
+										}
+
+										if (
+											data.ok === true &&
+											errorCount === 0
+											) {
+												console.log(
+													"✅ Sistema listo."
+												);
+
+												activeTestJobs.delete(
+													testId
+												);
+
+												return res.json({
+													ok: true,
+													received:
+													true,
+													testId,
+													finished:
+													true
+												});
+											}
 
 											if (
-												individual &&
-												!keys.includes(
-													individual
-												)
+												job.ciclo >=
+												MAX_TEST_CYCLES
 												) {
-													keys.unshift(
-														individual
-													);
-												}
-
-												res.json({
-													ok: true,
-
-													omnirouteConfigured:
-													keys.length > 0,
-
-													omnirouteKeys:
-													keys.length,
-
-													provider:
-													"OmniRoute",
-
-													model:
-													OMNIROUTE_MODEL_ID,
-
-													reasoningEffort:
-													OMNIROUTE_CONFIG
-													.reasoningEffort,
-
-													pendingActions:
-													pendingActions.length,
-
-													storedTestResults:
-													testResults.size,
-
-													activeTests:
-													activeTestJobs.size
-												});
-										}
-									);
-
-									app.get(
-										"/next",
-										(_req, res) => {
-											const actions =
-											pendingActions;
-
-											pendingActions = [];
-
-											res.json({
-												actions
-											});
-										}
-									);
-
-									/*
-									* ============================================================
-									* RESULTADOS DE TEST
-									* ============================================================
-									*/
-
-									app.post(
-										"/test-results",
-										async (req, res) => {
-											try {
-												const data =
-												req.body || {};
-
-												const testId =
-												String(
-													data.testId ||
-													""
-												).trim();
-
-												if (!testId) {
-													return res
-													.status(400)
-													.json({
-														ok: false,
-														error:
-														"Falta testId"
-													});
-													}
-
-													const result = {
-														...data,
-
-														testId,
-
-														receivedAt:
-														new Date()
-														.toISOString()
-													};
-
-													testResults.set(
-														testId,
-														result
+													console.error(
+														"❌ No se pudo resolver automáticamente después de 3 ciclos."
 													);
 
-													const errorCount =
-													Array.isArray(
-														data.errors
-													)
-													? data.errors.length
-													: 0;
-
-													const warningCount =
-													Array.isArray(
-														data.warnings
-													)
-													? data.warnings.length
-													: 0;
-
-													console.log(
-														`[RobloxAI] 🧪 Resultado recibido: ${testId}`
-													);
-
-													console.log(
-														`[RobloxAI] Estado: ${Boolean(
-															data.ok
-														)}`
-													);
-
-													console.log(
-														`[RobloxAI] Errores: ${errorCount}`
-													);
-
-													console.log(
-														`[RobloxAI] Warnings: ${warningCount}`
-													);
-
-													const job =
-													activeTestJobs.get(
+													activeTestJobs.delete(
 														testId
 													);
 
-													if (!job) {
-														console.warn(
-															`[RobloxAI] ⚠️ Test no registrado: ${testId}`
+													return res.json({
+														ok: true,
+														received:
+														true,
+														testId,
+														finished:
+														true,
+														maxCyclesReached:
+														true
+													});
+												}
+
+												console.log(
+													"❌ Se encontró un error."
+												);
+
+												console.log(
+													"🧠 Analizando la causa..."
+												);
+
+												const siguienteCiclo =
+												job.ciclo + 1;
+
+												console.log(
+													`🔧 Corrigiendo... ciclo ${siguienteCiclo}/${MAX_TEST_CYCLES}`
+												);
+
+												const correction =
+												await pedirCorreccion(
+													job.mensajeOriginal,
+													result
+												);
+
+												if (
+													!correction ||
+													correction.actions
+													.length === 0
+													) {
+														console.error(
+															"❌ No se generó una corrección ejecutable."
+														);
+
+														activeTestJobs.delete(
+															testId
 														);
 
 														return res.json({
@@ -3967,377 +4322,310 @@ const CHAT_SYSTEM = [
 															received:
 															true,
 															testId,
-															tracked:
-															false
-														});
-														}
-
-														if (
-															data.ok === true &&
-															errorCount === 0
-															) {
-																console.log(
-																	"✅ Sistema listo."
-																);
-
-																activeTestJobs.delete(
-																	testId
-																);
-
-																return res.json({
-																	ok: true,
-																	received:
-																	true,
-																	testId,
-																	finished:
-																	true
-																});
-															}
-
-															if (
-																job.ciclo >=
-																MAX_TEST_CYCLES
-																) {
-																	console.error(
-																		"❌ No se pudo resolver automáticamente después de 3 ciclos."
-																	);
-
-																	activeTestJobs.delete(
-																		testId
-																	);
-
-																	return res.json({
-																		ok: true,
-																		received:
-																		true,
-																		testId,
-																		finished:
-																		true,
-																		maxCyclesReached:
-																		true
-																	});
-																}
-
-																console.log(
-																	"❌ Se encontró un error."
-																);
-
-																console.log(
-																	"🧠 Analizando la causa..."
-																);
-
-																const siguienteCiclo =
-																job.ciclo + 1;
-
-																console.log(
-																	`🔧 Corrigiendo... ciclo ${siguienteCiclo}/${MAX_TEST_CYCLES}`
-																);
-
-																const correction =
-																await pedirCorreccion(
-																	job.mensajeOriginal,
-																	result
-																);
-
-																if (
-																	!correction ||
-																	correction.actions
-																	.length === 0
-																	) {
-																		console.error(
-																			"❌ No se generó una corrección ejecutable."
-																		);
-
-																		activeTestJobs.delete(
-																			testId
-																		);
-
-																		return res.json({
-																			ok: true,
-																			received:
-																			true,
-																			testId,
-																			finished:
-																			true,
-																			correctionFailed:
-																			true
-																		});
-																	}
-
-																	const newTests =
-																	obtenerTestsDeAcciones(
-																		correction.actions
-																	);
-
-																	if (
-																		newTests.length ===
-																		0
-																		) {
-																			console.error(
-																				"❌ La corrección no incluyó una nueva prueba."
-																			);
-
-																			activeTestJobs.delete(
-																				testId
-																			);
-
-																			return res.json({
-																				ok: true,
-																				received:
-																				true,
-																				testId,
-																				finished:
-																				true,
-																				retestMissing:
-																				true
-																			});
-																		}
-
-																		pendingActions =
-																		correction.actions;
-
-																		activeTestJobs.delete(
-																			testId
-																		);
-
-																		registrarTests(
-																			job.mensajeOriginal,
-																			pendingActions,
-																			siguienteCiclo
-																		);
-
-																		console.log(
-																			"🧪 Nueva prueba preparada."
-																		);
-
-																		return res.json({
-																			ok: true,
-																			received:
-																			true,
-																			testId,
-																			correctionStarted:
-																			true,
-																			nextCycle:
-																			siguienteCiclo,
-																			pendingActions:
-																			pendingActions.length
-																		});
-											} catch (error) {
-												console.error(
-													"❌ Error procesando /test-results:",
-													error instanceof Error
-													? error.message
-													: String(error)
-												);
-
-												return res
-												.status(500)
-												.json({
-													ok: false,
-													error:
-													error instanceof Error
-													? error.message
-													: String(
-														error
-													)
-												});
-											}
-										}
-									);
-
-									app.get(
-										"/test-results/:testId",
-										(req, res) => {
-											const testId =
-											String(
-												req.params
-												.testId ||
-												""
-											);
-
-											const result =
-											testResults.get(
-												testId
-											);
-
-											if (!result) {
-												return res
-												.status(404)
-												.json({
-													ok: false,
-													error:
-													"Resultado no encontrado"
-												});
-												}
-
-												return res.json(
-													result
-												);
-										}
-									);
-
-									/*
-									* ============================================================
-									* SCRIPT SELECCIONADO
-									* ============================================================
-									*/
-
-									app.post(
-										"/selected-script",
-										(req, res) => {
-											const body =
-											req.body;
-
-											if (
-												!body ||
-												body.selected !==
-												true
-												) {
-													contextoScriptSeleccionado =
-													null;
-
-													return res.json({
-														ok: true
-													});
-												}
-
-												if (
-													!SCRIPT_CLASSES.has(
-														body.className
-													) ||
-													typeof body.name !==
-													"string" ||
-													typeof body.path !==
-													"string" ||
-													typeof body.source !==
-													"string"
-													) {
-														return res
-														.status(400)
-														.json({
-															ok: false,
-															error:
-															"Script seleccionado inválido."
+															finished:
+															true,
+															correctionFailed:
+															true
 														});
 													}
 
-													contextoScriptSeleccionado = {
-														className:
-														body.className,
+													const newTests =
+													obtenerTestsDeAcciones(
+														correction.actions
+													);
 
-														name:
-														body.name.trim(),
+													if (
+														newTests.length ===
+														0
+														) {
+															console.error(
+																"❌ La corrección no incluyó una nueva prueba."
+															);
 
-														path:
-														body.path
-														.trim()
-														.replaceAll(
-															"\\",
-															"/"
-														),
+															activeTestJobs.delete(
+																testId
+															);
 
-														source:
-														body.source
-													};
+															return res.json({
+																ok: true,
+																received:
+																true,
+																testId,
+																finished:
+																true,
+																retestMissing:
+																true
+															});
+														}
 
-													return res.json({
-														ok: true
-													});
-										}
-									);
+														pendingActions =
+														correction.actions;
 
-									/*
-									* ============================================================
-									* SERVIDOR
-									* ============================================================
-									*/
-
-									app.listen(
-										PORT,
-										() => {
-											console.log(
-												"================================="
-											);
-
-											console.log(
-												"🤖 ROBLOX AI BRIDGE — OMNIROUTE"
-											);
-
-											console.log(
-												"================================="
-											);
-
-											console.log(
-												`Servidor: http://127.0.0.1:${PORT}`
-											);
-
-											console.log(
-												`Modelo: ${OMNIROUTE_MODEL_ID}`
-											);
-
-											console.log(
-												"Reasoning: salida oculta"
-											);
-
-											console.log(
-												"Funciones: creación y refinamiento de VFX mediante instancias y propiedades en Studio"
-											);
-
-											console.log(
-												"Modo especializado: VFX/PFX; no programación general."
-											);
-
-											console.log(
-												"=================================\n"
-											);
-										}
-									);
-
-									const rl =
-									readline.createInterface({
-										input:
-										process.stdin,
-
-										output:
-										process.stdout
-									});
-
-									console.log(
-										"Describe el VFX que quieres crear o mejorar. Escribe 'salir' para cerrar.\n"
-									);
-
-									while (true) {
-										const mensaje =
-										await rl.question(
-											"Tú: "
-										);
-
-										const texto =
-										mensaje.trim();
-
-										if (!texto) {
-											continue;
-											}
-
-											if (
-												texto.toLowerCase() ===
-												"salir"
-												) {
-													break;
-												}
-
-												if (
-													esTareaProyecto(
-														texto
-													)
-													) {
-														await procesarVFX(
-															texto,
-															esSoloAnalisis(
-																texto
-															)
+														activeTestJobs.delete(
+															testId
 														);
-													} else {
+
+														registrarTests(
+															job.mensajeOriginal,
+															pendingActions,
+															siguienteCiclo
+														);
+
+														console.log(
+															"🧪 Nueva prueba preparada."
+														);
+
+														return res.json({
+															ok: true,
+															received:
+															true,
+															testId,
+															correctionStarted:
+															true,
+															nextCycle:
+															siguienteCiclo,
+															pendingActions:
+															pendingActions.length
+														});
+							} catch (error) {
+								console.error(
+									"❌ Error procesando /test-results:",
+									error instanceof Error
+									? error.message
+									: String(error)
+								);
+
+								return res
+								.status(500)
+								.json({
+									ok: false,
+									error:
+									error instanceof Error
+									? error.message
+									: String(
+										error
+									)
+								});
+							}
+						}
+					);
+
+					app.get(
+						"/test-results/:testId",
+						(req, res) => {
+							const testId =
+							String(
+								req.params
+								.testId ||
+								""
+							);
+
+							const result =
+							testResults.get(
+								testId
+							);
+
+							if (!result) {
+								return res
+								.status(404)
+								.json({
+									ok: false,
+									error:
+									"Resultado no encontrado"
+								});
+								}
+
+								return res.json(
+									result
+								);
+						}
+					);
+
+					/*
+					* ============================================================
+					* SCRIPT SELECCIONADO
+					* ============================================================
+					*/
+
+					app.post(
+						"/selected-script",
+						(req, res) => {
+							const body =
+							req.body;
+
+							if (
+								!body ||
+								body.selected !==
+								true
+								) {
+									contextoScriptSeleccionado =
+									null;
+
+									return res.json({
+										ok: true
+									});
+								}
+
+								if (
+									!SCRIPT_CLASSES.has(
+										body.className
+									) ||
+									typeof body.name !==
+									"string" ||
+									typeof body.path !==
+									"string" ||
+									typeof body.source !==
+									"string"
+									) {
+										return res
+										.status(400)
+										.json({
+											ok: false,
+											error:
+											"Script seleccionado inválido."
+										});
+									}
+
+									contextoScriptSeleccionado = {
+										className:
+										body.className,
+
+										name:
+										body.name.trim(),
+
+										path:
+										body.path
+										.trim()
+										.replaceAll(
+											"\\",
+											"/"
+										),
+
+										source:
+										body.source
+									};
+
+									return res.json({
+										ok: true
+									});
+						}
+					);
+
+					/*
+					* ============================================================
+					* SERVIDOR
+					* ============================================================
+					*/
+
+					app.listen(
+						PORT,
+						() => {
+							console.log(
+								"================================="
+							);
+
+							console.log(
+								"🤖 ROBLOX AI BRIDGE — OMNIROUTE"
+							);
+
+							console.log(
+								"================================="
+							);
+
+							console.log(
+								`Servidor: http://127.0.0.1:${PORT}`
+							);
+
+							console.log(
+								`Modelo: ${OMNIROUTE_MODEL_ID}`
+							);
+
+							console.log(
+								"Reasoning: salida oculta"
+							);
+
+							console.log(
+								"Funciones: creación y refinamiento de VFX mediante instancias y propiedades en Studio"
+							);
+
+							console.log(
+								"Modo especializado: VFX/PFX; no programación general."
+							);
+
+							console.log(
+								"=================================\n"
+							);
+						}
+					);
+
+					const rl =
+					readline.createInterface({
+						input:
+						process.stdin,
+
+						output:
+						process.stdout
+					});
+
+					console.log(
+						"Describe el VFX que quieres crear o mejorar. Escribe 'salir' para cerrar.\n"
+					);
+
+					while (true) {
+						const mensaje =
+						await rl.question(
+							"Tú: "
+						);
+
+						const texto =
+						mensaje.trim();
+
+						if (!texto) {
+							continue;
+							}
+
+							if (
+								texto.toLowerCase() ===
+								"salir"
+								) {
+									break;
+								}
+
+							if (
+								esTareaProyecto(
+									texto
+								)
+								) {
+									let mensajeUsuario =
+									texto;
+
+								const imagenPendiente =
+									consumirImagenPendiente();
+
+								if (imagenPendiente) {
+									mensajeUsuario =
+										`${texto} imagen: "${imagenPendiente}"`;
+									console.log(
+										`[RobloxAI] Imagen adjuntada desde ./entradas: ${path.basename(imagenPendiente)}`
+									);
+								} else if (hayImagenPendiente()) {
+									console.log(
+										"[RobloxAI] Hay una imagen en ./entradas que se adjuntará a la próxima petición de VFX."
+									);
+								}
+
+								await procesarVFX(
+									mensajeUsuario,
+									esSoloAnalisis(
+										texto
+									)
+								);
+							} else {
+								if (hayImagenPendiente()) {
+									console.log(
+										"[RobloxAI] Hay una imagen en ./entradas; se adjuntará a la próxima petición de VFX."
+									);
+								}
 	await responderChat(
 		texto
 	);
