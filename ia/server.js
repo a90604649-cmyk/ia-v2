@@ -1162,11 +1162,12 @@ async function obtenerMiniaturaCatalogo(assetId) {
 }
 
 async function rankearCandidatosVisualmente(candidatos, tipo = "textura", keyword = "") {
-	if (!Array.isArray(candidatos) || candidatos.length < 2) return candidatos || [];
+	if (!Array.isArray(candidatos) || candidatos.length === 0) return [];
+	if (candidatos.length < 2 && tipo !== "modelo") return candidatos;
 	const referencia = referenciaVisualActual;
 	if (!referencia || !String(process.env.NVIDIA_API_KEY || "").trim()) {
-		console.log("[RobloxAI] Ranking visual de catálogo omitido: falta imagen de referencia o NVIDIA_API_KEY; se conserva el orden del catálogo.");
-		return candidatos;
+		console.log("[RobloxAI] Ranking visual de catálogo omitido: falta imagen de referencia o NVIDIA_API_KEY.");
+		return tipo === "modelo" ? [] : candidatos;
 	}
 
 	// Limita las miniaturas para no saturar memoria/red ni el contexto multimodal.
@@ -1176,9 +1177,9 @@ async function rankearCandidatosVisualmente(candidatos, tipo = "textura", keywor
 		miniatura: await obtenerMiniaturaCatalogo(item.id)
 	})));
 	const disponibles = miniaturas.filter((x) => x.miniatura);
-	if (disponibles.length < 2) {
-		console.warn("[RobloxAI] No hubo suficientes miniaturas del catálogo; se conserva el orden de búsqueda.");
-		return candidatos;
+	if (disponibles.length === 0 || (disponibles.length < 2 && tipo !== "modelo")) {
+		console.warn("[RobloxAI] No hubo suficientes miniaturas del catálogo para una comparación visual fiable.");
+		return tipo === "modelo" ? [] : candidatos;
 	}
 
 	const contenido = [
@@ -1210,21 +1211,21 @@ async function rankearCandidatosVisualmente(candidatos, tipo = "textura", keywor
 		respuesta = await preguntarNvidiaVision(mensajes);
 	} catch (primaryError) {
 		if (!NVIDIA_VISION_FALLBACK_MODEL || NVIDIA_VISION_FALLBACK_MODEL === NVIDIA_VISION_MODEL) {
-			console.warn("[RobloxAI] Ranking visual falló; se conserva el orden del catálogo.", primaryError instanceof Error ? primaryError.message : String(primaryError));
-			return candidatos;
+			console.warn("[RobloxAI] Ranking visual falló.", primaryError instanceof Error ? primaryError.message : String(primaryError));
+			return tipo === "modelo" ? [] : candidatos;
 		}
 		try {
 			respuesta = await preguntarNvidiaVision(mensajes, NVIDIA_VISION_FALLBACK_MODEL);
 		} catch (fallbackError) {
-			console.warn("[RobloxAI] Ranking visual y respaldo fallaron; se conserva el orden del catálogo.", fallbackError instanceof Error ? fallbackError.message : String(fallbackError));
-			return candidatos;
+			console.warn("[RobloxAI] Ranking visual y respaldo fallaron.", fallbackError instanceof Error ? fallbackError.message : String(fallbackError));
+			return tipo === "modelo" ? [] : candidatos;
 		}
 	}
 
 	try {
 		const limpio = String(respuesta || "").trim().replace(/^\uFEFF/, "").replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "");
 		const json = limpio.match(/\{[\s\S]*\}/);
-		if (!json) return candidatos;
+		if (!json) return tipo === "modelo" ? [] : candidatos;
 		const parsed = JSON.parse(json[0]);
 		const byId = new Map(candidatos.map((item) => [String(item.id), item]));
 		const ordenados = [];
@@ -1242,7 +1243,7 @@ async function rankearCandidatosVisualmente(candidatos, tipo = "textura", keywor
 					ordenados.push(byId.get(id));
 				}
 			});
-		if (!ordenados.length) return candidatos;
+		if (!ordenados.length) return tipo === "modelo" ? [] : candidatos;
 		const mejorPuntuacion = puntuaciones.get(String(ordenados[0].id));
 		if (tipo === "modelo" && Number.isFinite(mejorPuntuacion) && mejorPuntuacion < 35) {
 			console.warn(`[RobloxAI] Ninguna miniatura de modelo pareció suficientemente similar a la referencia (mejor puntuación ${mejorPuntuacion}/100); no se insertará un modelo potencialmente irrelevante.`);
@@ -1255,8 +1256,8 @@ async function rankearCandidatosVisualmente(candidatos, tipo = "textura", keywor
 		console.log(`[RobloxAI] Ranking visual del catálogo completado: mejor candidato ID ${ordenados[0].id} (${ordenados[0].nombre || "sin nombre"}).`);
 		return ordenados;
 	} catch (error) {
-		console.warn("[RobloxAI] La respuesta del ranking visual no era JSON válido; se conserva el orden del catálogo.", error instanceof Error ? error.message : String(error));
-		return candidatos;
+		console.warn("[RobloxAI] La respuesta del ranking visual no era JSON válido.", error instanceof Error ? error.message : String(error));
+		return tipo === "modelo" ? [] : candidatos;
 	}
 }
 
