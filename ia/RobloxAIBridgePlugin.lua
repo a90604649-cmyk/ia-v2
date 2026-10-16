@@ -2270,6 +2270,7 @@ local function recolectarElementosVFX(detalles)
 			ancestro = ancestro.Parent
 		end
 		for _, hijo in ipairs(instancia:GetDescendants()) do
+			visitados[hijo] = true
 			registrar(hijo)
 		end
 	end
@@ -2667,7 +2668,7 @@ local function proyectarEscena(elementos, anchoObjetivo)
 				local anchoMedio = promedioNumero(trail.WidthScale, 1)
 				local grosor = math.clamp(anchoMedio * escala * 0.5, 1, 24)
 				dibujos[#dibujos + 1] = {kind = "line", a = a.punto, b = b.punto, radius = grosor,
-					color = promedioColor(trail.Color), alpha = 0.65, z = (a.z + b.z) / 2}
+					color = promedioColor(trail.Color), alpha = opacidad(trail.Transparency), z = (a.z + b.z) / 2}
 			end
 		end
 	end
