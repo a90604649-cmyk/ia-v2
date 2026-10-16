@@ -1,4 +1,45 @@
 local HttpService = game:GetService("HttpService")
+
+-- Modo de diagnóstico: solo advertencias/errores; se silencian los print rutinarios.
+local warnOriginal = warn
+local function valorLogDiagnostico(valor)
+	if type(valor) == "table" then
+		local okJson, json = pcall(function()
+			return HttpService:JSONEncode(valor)
+		end)
+		if okJson then
+			return json
+		end
+	end
+	return tostring(valor)
+end
+
+local function warnConDiagnostico(...)
+	local partes = {}
+	for indice = 1, select("#", ...) do
+		table.insert(partes, valorLogDiagnostico(select(indice, ...)))
+	end
+
+	local traza = ""
+	local okTraza, resultadoTraza = pcall(function()
+		return debug.traceback("", 3)
+	end)
+	if okTraza and type(resultadoTraza) == "string" then
+		local lineas = {}
+		for linea in string.gmatch(resultadoTraza, "[^\\n]+") do
+			table.insert(lineas, linea)
+			if #lineas >= 6 then
+				break
+			end
+		end
+		traza = table.concat(lineas, "\\n")
+	end
+
+	warnOriginal("[Roblox AI][DIAGNOSTIC_WARN] " .. table.concat(partes, " ") .. (traza ~= "" and ("\\n" .. traza) or ""))
+end
+
+local warn = warnConDiagnostico
+local print = function(...) end
 local AssetService = game:GetService("AssetService")
 local InsertService = game:GetService("InsertService")
 local ScriptEditorService = game:GetService("ScriptEditorService")
