@@ -74,6 +74,9 @@ local button = toolbar:CreateButton(
 )
 button.ClickableWhenViewportHidden = true
 
+-- Señal única de carga: si no aparece, Studio no está ejecutando este archivo actualizado.
+warnOriginal("[Roblox AI][DIAGNOSTIC] Plugin cargado; botón de VFX registrado.")
+
 local conectado = false
 local consultando = false
 local escaneando = false
@@ -2935,27 +2938,45 @@ local function iniciarLoops()
 end
 
 button.Click:Connect(function()
-	if conectado then
+	-- El print rutinario está silenciado; estos diagnósticos sí deben aparecer en Output.
+	warnOriginal("[Roblox AI][DIAGNOSTIC] Clic del botón recibido.")
+
+	local ok, err = xpcall(function()
+		if conectado then
+			conectado = false
+			pcall(function()
+				button:SetActive(false)
+			end)
+			warnOriginal("[Roblox AI][DIAGNOSTIC] Plugin desconectado por el usuario.")
+			return
+		end
+
+		if not comprobarServidor() then
+			warnOriginal("[Roblox AI][DIAGNOSTIC] No se pudo activar el plugin: el servidor local no respondió correctamente. Revisa el error de conexión anterior.")
+			return
+		end
+
+		conectado = true
+		button:SetActive(true)
+		warnOriginal("[Roblox AI][DIAGNOSTIC] Servidor local disponible; conexión activada.")
+
+		local scanOk, scanResult = pcall(escanearProyecto)
+		if not scanOk then
+			warnOriginal("[Roblox AI][DIAGNOSTIC_ERROR] Falló el escaneo inicial: " .. tostring(scanResult) .. "\\n" .. debug.traceback())
+		elseif scanResult == false then
+			warnOriginal("[Roblox AI][DIAGNOSTIC_WARN] El escaneo inicial no pudo completarse; revisa errores de HTTP/permisos.")
+		end
+
+		iniciarLoops()
+	end, function(callbackError)
+		return tostring(callbackError) .. "\\n" .. debug.traceback()
+	end)
+
+	if not ok then
 		conectado = false
-		button:SetActive(false)
-		print("[Roblox AI] 🔌 DESCONECTADO")
-		return
+		pcall(function()
+			button:SetActive(false)
+		end)
+		warnOriginal("[Roblox AI][DIAGNOSTIC_ERROR] Excepción al procesar el clic: " .. tostring(err))
 	end
-
-	if not comprobarServidor() then
-		return
-	end
-
-	conectado = true
-	button:SetActive(true)
-
-	print("=================================")
-	print("[Roblox AI] 🟢 CONECTADO")
-	print("[Roblox AI] Proveedor: OmniRoute")
-	print("[Roblox AI] Modo VFX: instancias visuales y propiedades; sin scripts, remotos ni pruebas de juego")
-	print("[Roblox AI] Escaneo: al conectar + cada 5 minutos")
-	print("=================================")
-
-	escanearProyecto()
-	iniciarLoops()
 end)
