@@ -4168,19 +4168,53 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 		}
 	];
 
-	let comparacion;
-	try {
-		comparacion = await preguntarNvidiaVisionConReintento(comparacionMensajes);
-	} catch (primaryError) {
-		if (!NVIDIA_VISION_FALLBACK_MODEL || NVIDIA_VISION_FALLBACK_MODEL === NVIDIA_VISION_MODEL) {
-			console.warn("[RobloxAI] Revisión omitida: el modelo visual principal falló.", primaryError instanceof Error ? primaryError.message : String(primaryError));
-			return;
-		}
+	let comparacion = "";
+	let errorVisionDirecta = null;
+	const tieneClaveNvidia = Boolean(String(process.env.NVIDIA_API_KEY || "").trim());
+
+	if (tieneClaveNvidia) {
 		try {
-			console.warn(`[RobloxAI] El modelo visual principal falló; probando alternativa ${NVIDIA_VISION_FALLBACK_MODEL}...`);
-			comparacion = await preguntarNvidiaVisionConReintento(comparacionMensajes, NVIDIA_VISION_FALLBACK_MODEL);
-		} catch (fallbackError) {
-			console.warn("[RobloxAI] Revisión omitida: ambos modelos visuales fallaron.", fallbackError instanceof Error ? fallbackError.message : String(fallbackError));
+			comparacion = await preguntarNvidiaVisionConReintento(comparacionMensajes);
+		} catch (primaryError) {
+			const primaryMessage = primaryError instanceof Error ? primaryError.message : String(primaryError);
+			errorVisionDirecta = primaryMessage;
+
+			if (NVIDIA_VISION_FALLBACK_MODEL && NVIDIA_VISION_FALLBACK_MODEL !== NVIDIA_VISION_MODEL) {
+				try {
+					console.warn(`[RobloxAI] La revisión visual directa falló; probando alternativa ${NVIDIA_VISION_FALLBACK_MODEL}...`);
+					comparacion = await preguntarNvidiaVisionConReintento(comparacionMensajes, NVIDIA_VISION_FALLBACK_MODEL);
+					errorVisionDirecta = null;
+				} catch (fallbackError) {
+					errorVisionDirecta = `Principal: ${primaryMessage}. Alternativa: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`;
+				}
+			}
+		}
+	}
+
+	// NVIDIA es opcional. Si no hay clave o su endpoint falla, usa la ruta visual
+	// configurada en OmniRoute en lugar de omitir siempre la revisión posterior.
+	if (!String(comparacion || "").trim()) {
+		const modeloRevision = OMNIROUTE_VISION_MODEL || OMNIROUTE_MODEL_ID;
+		try {
+			console.warn(`[RobloxAI] Revisando el resultado mediante OmniRoute (${modeloRevision})...`);
+			comparacion = await preguntarOmniRoute(comparacionMensajes, {
+				model: modeloRevision,
+				temperature: 0.1,
+				reasoningEffort: "none",
+				timeoutMs: Math.min(
+					120000,
+					Math.max(10000, Number(process.env.OMNIROUTE_TIMEOUT_MS || 120000))
+				),
+				attemptsPerKey: 1
+			});
+		} catch (omniError) {
+			console.warn(
+				"[RobloxAI] Revisión visual omitida: fallaron las rutas visuales disponibles.",
+				JSON.stringify({
+					nvidia: errorVisionDirecta,
+					omniRoute: omniError instanceof Error ? omniError.message : String(omniError)
+				})
+			);
 			return;
 		}
 	}
