@@ -4232,9 +4232,17 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 							};
 							console.log(`[RobloxAI] Resultado Studio: ${lastExecutionReport.successful} correctas | ${lastExecutionReport.failed} fallidas.`);
 							res.json({ ok: true });
-							if (lastExecutionReport.successful > 0 && lastVisualCapture) {
+							const requiereRevisionVisual = actions.some((action) => {
+								const tipo = String(action?.type || action?.action || "").toLowerCase();
+								return tipo !== "verify_textures" && tipo !== "verify_models";
+							});
+							if (lastExecutionReport.successful > 0 && lastVisualCapture && requiereRevisionVisual) {
 								void evaluarCapturaVFX(lastExecutionReport);
-								}
+							} else if (!requiereRevisionVisual) {
+								// Una validación de catálogo no es una escena construida:
+								// jamás debe iniciar revisión usando una proyección vacía o antigua.
+								lastVisualCapture = null;
+							}
 						}
 					);
 
