@@ -707,6 +707,32 @@ local function aplicarPropiedad(objeto, nombre, valor)
 	local convertido
 	local ok, err = pcall(function()
 		convertido = convertirValor(valor)
+
+		-- Beam.Attachment0/1 requieren una instancia Attachment, no una cadena.
+		-- Acepta rutas "Workspace/Model/Base/Attachment" y "Workspace.Model.Base.Attachment".
+		if (nombre == "Attachment0" or nombre == "Attachment1") and type(convertido) == "string" then
+			local rutaReferencia = string.gsub(convertido, "\\", "/")
+			if not string.find(rutaReferencia, "/", 1, true) then
+				rutaReferencia = string.gsub(rutaReferencia, "%.", "/")
+			end
+
+			local partesReferencia = {}
+			for parte in string.gmatch(rutaReferencia, "[^/]+") do
+				table.insert(partesReferencia, parte)
+			end
+			if #partesReferencia < 2 then
+				error(nombre .. " requiere una ruta completa a un Attachment.")
+			end
+
+			local nombreReferencia = table.remove(partesReferencia)
+			local rutaPadre = table.concat(partesReferencia, "/")
+			local referencia = obtenerInstancia(rutaPadre, nombreReferencia)
+			if not referencia or not referencia:IsA("Attachment") then
+				error("No se encontró el Attachment de referencia: " .. convertido)
+			end
+			convertido = referencia
+		end
+
 		objeto[nombre] = convertido
 	end)
 
