@@ -3772,7 +3772,7 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 										"❌ OmniRoute respondió sin acciones ejecutables."
 									);
 
-									console.log(
+									console.info(
 										resultado.reply ||
 										"Sin explicación."
 									);
@@ -3939,11 +3939,11 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 												`Se prepararon ${resultado.actions.length} acciones.`
 											);
 
-											console.log(
+											console.info(
 												`✅ OmniRoute terminó: ${pendingActions.length} acción(es) listas para Roblox Studio.`
 											);
 
-											console.log(
+											console.info(
 												resultado.reply ||
 												"Cambios preparados."
 											);
@@ -4027,7 +4027,7 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 						texto
 					);
 
-					console.log(
+					console.info(
 						`\n${texto}`
 					);
 
@@ -4206,7 +4206,7 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 		}
 		pendingActions = result.actions;
 		console.log(`[RobloxAI] Revisión aproximada ${visualReviewCycles}/${MAX_VISUAL_REVIEW_CYCLES}: ${pendingActions.length} ajuste(s) listos para Studio.`);
-		console.log(result.reply || "Ajustes visuales preparados.");
+		console.info(result.reply || "Ajustes visuales preparados.");
 	} catch (error) {
 		console.warn("[RobloxAI] No se pudieron convertir las diferencias en acciones; no se generaron correcciones a ciegas.", error instanceof Error ? error.message : String(error));
 	}
@@ -4839,7 +4839,7 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 						process.stdout
 					});
 
-					console.log(
+					console.info(
 						"Describe el VFX que quieres crear o mejorar. Escribe 'salir' para cerrar.\n"
 					);
 
