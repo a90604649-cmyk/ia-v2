@@ -911,26 +911,24 @@ const esperasModelos = new Map();
 												}
 
 												async function pedirJson(url, timeoutMs = 12000) {
-													try {
-														const response = await fetch(url, {
-															headers: {
-																Accept: "application/json"
-															},
+	try {
+		const response = await fetch(url, {
+			headers: { Accept: "application/json" },
+			signal: AbortSignal.timeout(timeoutMs)
+		});
+		if (!response.ok) {
+			return null;
+		}
+		return await response.json();
+	} catch (error) {
+		let host = "invalid-url";
+		try { host = new URL(url).host; } catch {}
+		logError("RobloxAI", "external.json_fetch_failed", error, { host, timeoutMs });
+		return null;
+	}
+}
 
-															signal: AbortSignal.timeout(timeoutMs)
-														});
-
-														if (!response.ok) {
-															return null;
-															}
-
-															return await response.json();
-													} catch {
-														return null;
-													}
-													}
-
-													function idsDeCatalogoModerno(datos) {
+												function idsDeCatalogoModerno(datos) {
 														const lista = Array.isArray(datos?.data)
 														? datos.data
 														: Array.isArray(datos)
@@ -1159,7 +1157,7 @@ async function obtenerMiniaturaCatalogo(assetId) {
 			`https://thumbnails.roblox.com/v1/assets?assetIds=${encodeURIComponent(String(assetId))}&size=420x420&format=Png&isCircular=false`,
 			8000
 		);
-		const item = Array.isArray(metadata?.data) ? metadata.data.find((x) => String(x?.targetId) === String(assetId)) : null;
+		const item = Array.isArray(metadata?.data) ? metadata.data.find((candidate) => String(candidate?.targetId) === String(assetId)) : null;
 		if (!item || item.state !== "Completed" || typeof item.imageUrl !== "string") return null;
 		const response = await fetch(item.imageUrl, { signal: AbortSignal.timeout(8000) });
 		if (!response.ok) return null;
@@ -1168,7 +1166,8 @@ async function obtenerMiniaturaCatalogo(assetId) {
 		const bytes = Buffer.from(await response.arrayBuffer());
 		if (!bytes.length || bytes.length > 1200000) return null;
 		return { dataUrl: `data:${mime};base64,${bytes.toString("base64")}` };
-	} catch {
+	} catch (error) {
+		logError("RobloxAI", "catalog.thumbnail_download_failed", error, { assetId: String(assetId) });
 		return null;
 	}
 }
@@ -1475,25 +1474,25 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 
 	function listarImagenesEntrada() {
 		try {
-			const archivos = readdirSync(CARPETA_IMAGENES, {
-				withFileTypes: true
-			});
-
+			const archivos = readdirSync(CARPETA_IMAGENES, { withFileTypes: true });
 			return archivos
-			.filter((entrada) => entrada.isFile())
-			.map((entrada) => {
-				const ruta = path.join(CARPETA_IMAGENES, entrada.name);
-				const estadisticas = statSync(ruta);
-				return {
-					ruta,
-					nombre: entrada.name,
-					extension: path.extname(entrada.name).toLowerCase(),
-					modificado: estadisticas.mtimeMs
-				};
-			})
-			.filter((archivo) => EXTENSIONES_IMAGEN.includes(archivo.extension))
-			.sort((a, b) => b.modificado - a.modificado);
-		} catch {
+				.filter((entrada) => entrada.isFile())
+				.map((entrada) => {
+					const ruta = path.join(CARPETA_IMAGENES, entrada.name);
+					const estadisticas = statSync(ruta);
+					return {
+						ruta,
+						nombre: entrada.name,
+						extension: path.extname(entrada.name).toLowerCase(),
+						modificado: estadisticas.mtimeMs
+					};
+				})
+				.filter((archivo) => EXTENSIONES_IMAGEN.includes(archivo.extension))
+				.sort((a, b) => b.modificado - a.modificado);
+		} catch (error) {
+			logError("RobloxAI", "reference.folder_list_failed", error, {
+				directory: path.basename(CARPETA_IMAGENES)
+			});
 			return [];
 		}
 	}
@@ -1504,21 +1503,17 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 
 	function consumirImagenPendiente() {
 		const pendientes = listarImagenesEntrada();
-		if (pendientes.length === 0) {
-			return null;
-		}
-
+		if (pendientes.length === 0) return null;
 		const archivo = pendientes[0];
-
 		try {
-			mkdirSync(CARPETA_IMAGENES_USADAS, {
-				recursive: true
-			});
-
+			mkdirSync(CARPETA_IMAGENES_USADAS, { recursive: true });
 			const destino = path.join(CARPETA_IMAGENES_USADAS, archivo.nombre);
 			renameSync(archivo.ruta, destino);
 			return destino;
-		} catch {
+		} catch (error) {
+			logError("RobloxAI", "reference.move_to_used_failed", error, {
+				fileName: archivo.nombre
+			});
 			return archivo.ruta;
 		}
 	}
@@ -2035,7 +2030,8 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 												"object"
 												? parsed
 												: null;
-											} catch {
+											} catch (error) {
+												logError("RobloxAI", "action.envelope_parse_failed", error, { jsonLength: json.length });
 												return null;
 											}
 											}
@@ -2874,7 +2870,8 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 														if (!action.code.startsWith(marker)) return false;
 														try {
 															payload = JSON.parse(action.code.slice(marker.length).trim());
-														} catch {
+														} catch (error) {
+															logError("RobloxAI", "action.validation_json_failed", error, { codeLength: action.code.length });
 															return false;
 														}
 														}
