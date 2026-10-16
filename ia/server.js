@@ -3142,7 +3142,8 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 										/NVIDIA Vision HTTP 5\d\d/i.test(primaryMessage) ||
 										/Failed to generate completions/i.test(primaryMessage) ||
 										/NVIDIA Vision agotó el tiempo límite/i.test(primaryMessage) ||
-										/This operation was aborted/i.test(primaryMessage);
+										/This operation was aborted/i.test(primaryMessage) ||
+										/NVIDIA Vision respondió sin texto final/i.test(primaryMessage);
 										if (!isEndpointDegraded || !NVIDIA_VISION_FALLBACK_MODEL || NVIDIA_VISION_FALLBACK_MODEL === NVIDIA_VISION_MODEL) {
 											throw primaryError;
 											}
