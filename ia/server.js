@@ -3,6 +3,13 @@ import "dotenv/config";
 import express from "express";
 import readline from "readline/promises";
 import {
+	installDiagnosticLogging,
+	installFatalErrorHandlers,
+	requestIdMiddleware,
+	expressErrorMiddleware,
+	logError
+} from "./diagnostics.js";
+import {
 	existsSync,
 	readFileSync,
 	writeFileSync,
@@ -21,12 +28,17 @@ import {
 } from "./omniRoute.js";
 
 const app = express();
+installDiagnosticLogging("RobloxAI");
+installFatalErrorHandlers("RobloxAI");
 
+app.use(requestIdMiddleware);
 app.use(
 	express.json({
 		limit: "8mb"
 	})
 );
+// Captura errores del parser JSON antes de que lleguen a las rutas.
+app.use(expressErrorMiddleware("RobloxAI"));
 
 const PORT = Number(
 	process.env.PORT || 3000
@@ -3199,8 +3211,11 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 											);
 						} catch (error) {
 							if (controller.signal.aborted) {
-								throw new Error(`NVIDIA Vision agotó el tiempo límite de ${timeoutMs} ms para ${model}.`);
+								const timeoutError = new Error(`NVIDIA Vision agotó el tiempo límite de ${timeoutMs} ms para ${model}.`);
+								logError("RobloxAI", "vision.request_timeout", timeoutError, { model, timeoutMs });
+								throw timeoutError;
 							}
+							logError("RobloxAI", "vision.request_failed", error, { model, timeoutMs });
 							throw error;
 						} finally {
 							clearTimeout(timer);
@@ -4204,8 +4219,13 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 							const data = req.body || {};
 							const imageBase64 = String(data.imageBase64 || "");
 							if (!imageBase64 || imageBase64.length > 6000000 || !/^[A-Za-z0-9+/=]+$/.test(imageBase64)) {
-								return res.status(400).json({ ok: false, error: "Captura PNG vacía, demasiado grande o inválida." });
-								}
+								logError("RobloxAI", "visual_capture.invalid_payload", new Error("La captura visual está vacía, supera 6 MB o no contiene Base64 válido."), {
+									requestId: req.diagnosticId || null,
+									base64Length: imageBase64.length,
+									hasImage: Boolean(imageBase64)
+								});
+								return res.status(400).json({ ok: false, error: "Captura PNG vacía, demasiado grande o inválida.", requestId: req.diagnosticId || null });
+							}
 								lastVisualCapture = {
 									dataUrl: `data:image/png;base64,${imageBase64}`,
 									receivedAt: Date.now(),
@@ -4766,6 +4786,8 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 					* SERVIDOR
 					* ============================================================
 					*/
+
+					app.use(expressErrorMiddleware("RobloxAI"));
 
 					app.listen(
 						PORT,
