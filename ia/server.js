@@ -2095,9 +2095,14 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 												};
 
 												rawAction = { ...packed };
+												// A few compatible model routes call the destination container "parent"
+												// instead of "path". Normalize that alias before validating VFX actions.
+												if (typeof rawAction.path !== "string" && typeof rawAction.parent === "string") {
+													rawAction.path = rawAction.parent;
+												}
 												if (typeof rawAction.path === "string") {
 													rawAction.path = normalizePackedPath(rawAction.path);
-													}
+												}
 													if (typeof rawAction.targetPath === "string") {
 														rawAction.targetPath = normalizePackedPath(rawAction.targetPath);
 														}
