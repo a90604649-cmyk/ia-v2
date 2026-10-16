@@ -2107,8 +2107,34 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 													rawAction.path = normalizePackedPath(rawAction.path);
 												}
 												if (typeof rawAction.targetPath === "string") {
-													rawAction.targetPath = normalizePackedPath(rawAction.targetPath);
-												}
+												rawAction.targetPath = normalizePackedPath(rawAction.targetPath);
+											}
+											// Vision/review routes sometimes encode set_property as { path: full.object.path, name: "Color", value: ... }.
+											// Normalize that alias only for a known visual property and an explicit full object route.
+											const packedActionType = String(rawAction.type || "").trim().toLowerCase();
+											const packedPropertyAliases = new Set([
+												"Enabled", "Anchored", "CanCollide", "CanTouch", "CanQuery",
+												"Transparency", "Reflectance", "CastShadow", "Massless", "Locked",
+												"Size", "Position", "Orientation", "CFrame", "Color", "Color3",
+												"Material", "Shape", "Texture", "Face", "Rate", "Speed", "Lifetime",
+												"EmissionDirection", "SpreadAngle", "LightEmission", "LightInfluence",
+												"Brightness", "Range", "Shadows", "Width0", "Width1", "CurveSize0",
+												"CurveSize1", "Attachment0", "Attachment1", "LockedToPart",
+												"RotSpeed", "Rotation", "ZOffset", "MaxDistance"
+											]);
+											const propertyAlias = String(rawAction.name || "").trim();
+											const targetParts = String(rawAction.path || "").split("/").filter(Boolean);
+											if (
+												packedActionType === "set_property" &&
+												!String(rawAction.property || "").trim() &&
+												packedPropertyAliases.has(propertyAlias) &&
+												targetParts.length >= 3 &&
+												BASES.includes(targetParts[0])
+											) {
+												rawAction.property = propertyAlias;
+												rawAction.name = targetParts[targetParts.length - 1];
+												rawAction.path = targetParts.slice(0, -1).join("/");
+											}
 														}
 												let type =
 												String(
