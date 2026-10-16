@@ -3,6 +3,11 @@ import { createServer } from "node:http";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import {
+	installDiagnosticLogging,
+	installFatalErrorHandlers,
+	logError
+} from "./diagnostics.js";
 
 const procesos = new Map();
 let robloxAiProcess = null;
@@ -17,6 +22,9 @@ const CONFIG = [
 ["ProjectContext", "projectContextServer.js"],
 ["RobloxAI", "server.js"]
 ];
+
+installDiagnosticLogging("BridgeLauncher");
+installFatalErrorHandlers("BridgeLauncher", () => cerrar(1));
 
 function iniciar(nombre, archivo, reintento = 0) {
 	if (cerrando) return;
@@ -62,10 +70,16 @@ function iniciar(nombre, archivo, reintento = 0) {
 			const linea = texto.replace(/\r\n?/g, "\n").replace(/\n+/g, " ").trim();
 
 			if (!texto) {
+				logError("BridgeLauncher", "request.empty_message", new Error("Se recibió una petición sin texto."));
 				return { ok: false, status: 400, error: "La petición está vacía." };
 				}
 
 				if (!robloxAiProcess || robloxAiProcess.killed || !robloxAiProcess.stdin?.writable) {
+					logError("BridgeLauncher", "request.bridge_unavailable", new Error("El proceso RobloxAI no está disponible o stdin no es escribible."), {
+						processExists: Boolean(robloxAiProcess),
+						processKilled: Boolean(robloxAiProcess?.killed),
+						stdinWritable: Boolean(robloxAiProcess?.stdin?.writable)
+					});
 					return { ok: false, status: 503, error: "El servidor Roblox AI todavía no está disponible." };
 					}
 
@@ -74,6 +88,10 @@ function iniciar(nombre, archivo, reintento = 0) {
 						console.log(`📝 Petición recibida desde la ventana: ${texto}`);
 						return { ok: true, status: 200 };
 					} catch (error) {
+						logError("BridgeLauncher", "request.write_to_bridge_failed", error, {
+							processExists: Boolean(robloxAiProcess),
+							stdinWritable: Boolean(robloxAiProcess?.stdin?.writable)
+						});
 						return {
 							ok: false,
 							status: 500,
@@ -112,6 +130,7 @@ function iniciar(nombre, archivo, reintento = 0) {
 		for await (const chunk of req) {
 			raw += chunk;
 			if (raw.length > 1024 * 256) {
+				logError("BridgeLauncher", "request.payload_too_large", new Error("El cuerpo de /ask superó 256 KiB."), { bytesReceived: raw.length });
 				res.writeHead(413, { "Content-Type": "application/json; charset=utf-8" });
 				res.end(JSON.stringify({ ok: false, error: "Petición demasiado grande." }));
 	return;
@@ -124,6 +143,7 @@ function iniciar(nombre, archivo, reintento = 0) {
 		res.writeHead(result.status, { "Content-Type": "application/json; charset=utf-8" });
 		res.end(JSON.stringify(result));
 	} catch (error) {
+		logError("BridgeLauncher", "request.invalid_json_or_payload", error, { endpoint: "/ask", bodyLength: raw.length });
 		res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
 		res.end(JSON.stringify({
 		ok: false,
@@ -133,6 +153,7 @@ function iniciar(nombre, archivo, reintento = 0) {
 	return;
 	}
 
+	logError("BridgeLauncher", "http.route_not_found", new Error("Se solicitó una ruta no registrada."), { method: req.method, path: req.url });
 	res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
 	res.end(JSON.stringify({ ok: false, error: "Ruta no encontrada." }));
 	});
@@ -179,7 +200,7 @@ function iniciar(nombre, archivo, reintento = 0) {
 			});
 			}
 
-		function cerrar() {
+		function cerrar(codigoSalida = 0) {
 			if (cerrando) return;
 			cerrando = true;
 
@@ -199,7 +220,7 @@ function iniciar(nombre, archivo, reintento = 0) {
 					procesos.clear();
 
 					setTimeout(() => {
-						process.exit(0);
+						process.exit(codigoSalida);
 					}, 250).unref();
 					}
 
