@@ -2962,14 +2962,14 @@ button.Click:Connect(function()
 
 		local scanOk, scanResult = pcall(escanearProyecto)
 		if not scanOk then
-			warnOriginal("[Roblox AI][DIAGNOSTIC_ERROR] Falló el escaneo inicial: " .. tostring(scanResult) .. "\\n" .. debug.traceback())
+			warnOriginal("[Roblox AI][DIAGNOSTIC_ERROR] Falló el escaneo inicial: " .. tostring(scanResult) .. "\n" .. debug.traceback())
 		elseif scanResult == false then
 			warnOriginal("[Roblox AI][DIAGNOSTIC_WARN] El escaneo inicial no pudo completarse; revisa errores de HTTP/permisos.")
 		end
 
 		iniciarLoops()
 	end, function(callbackError)
-		return tostring(callbackError) .. "\\n" .. debug.traceback()
+		return tostring(callbackError) .. "\n" .. debug.traceback()
 	end)
 
 	if not ok then
