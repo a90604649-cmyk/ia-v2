@@ -2095,17 +2095,20 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 												};
 
 												rawAction = { ...packed };
-												// A few compatible model routes call the destination container "parent"
-												// instead of "path". Normalize that alias before validating VFX actions.
+												// Compatibilidad con distintos formatos de acciones emitidos por rutas OpenAI.
+												// "parent" representa el contenedor en create_instance; "target" suele ser la ruta completa del objeto en set_property(s).
 												if (typeof rawAction.path !== "string" && typeof rawAction.parent === "string") {
 													rawAction.path = rawAction.parent;
+												}
+												if (typeof rawAction.path !== "string" && typeof rawAction.target === "string") {
+													rawAction.path = rawAction.target;
 												}
 												if (typeof rawAction.path === "string") {
 													rawAction.path = normalizePackedPath(rawAction.path);
 												}
-													if (typeof rawAction.targetPath === "string") {
-														rawAction.targetPath = normalizePackedPath(rawAction.targetPath);
-														}
+												if (typeof rawAction.targetPath === "string") {
+													rawAction.targetPath = normalizePackedPath(rawAction.targetPath);
+												}
 														}
 												let type =
 												String(
@@ -2915,9 +2918,26 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 																	"CylinderMesh", "Fire", "Smoke", "Sparkles", "BillboardGui", "SurfaceGui",
 																	"Frame", "ImageLabel", "ImageButton", "UIGradient", "UICorner"
 																	]);
-																if (!visualClasses.has(className)) return false;
-
-																	const allowed = new Set([
+																const allowedMutationsWithoutClass = new Set(["set_property", "set_properties"]);
+												if (!visualClasses.has(className)) {
+													if (className !== "" || !allowedMutationsWithoutClass.has(actionType)) return false;
+													// Allow only explicitly visual properties when a model omits className.
+													const safeProperties = new Set([
+														"Enabled", "Anchored", "CanCollide", "CanTouch", "CanQuery",
+														"Transparency", "Reflectance", "CastShadow", "Massless", "Locked",
+														"Size", "Position", "Orientation", "CFrame", "Color", "Color3",
+														"Material", "Shape", "Texture", "Face", "Rate", "Speed", "Lifetime",
+														"EmissionDirection", "SpreadAngle", "LightEmission", "LightInfluence",
+														"Brightness", "Range", "Shadows", "Width0", "Width1", "CurveSize0",
+														"CurveSize1", "Attachment0", "Attachment1", "LockedToPart",
+														"RotSpeed", "Rotation", "ZOffset", "MaxDistance"
+													]);
+													const mutationKeys = actionType === "set_property"
+														? [String(payload.property || "")]
+														: Object.keys(payload.properties && typeof payload.properties === "object" ? payload.properties : {});
+													if (mutationKeys.length === 0 || mutationKeys.some((key) => !safeProperties.has(key))) return false;
+												}
+											const allowed = new Set([
 																		"create_instance", "set_property", "set_properties", "rename_instance", "move_instance"
 																		]);
 																	if (allowed.has(actionType)) {
@@ -4148,7 +4168,7 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 		"Devuelve diferencias concretas solo si están respaldadas por la proyección o los metadatos; si no, indica que no hay evidencia suficiente y devuelve actions: []."
 	].join("\n");
 
-	const detalleEscena = String(capture.sceneSummary || "").slice(0, 18000);
+	const detalleEscena = String(capture.sceneSummary || "").slice(0, 7000);
 	const comparacionMensajes = [
 		{ role: "system", content: instrucciones },
 		{
@@ -4161,7 +4181,7 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 						"Acciones recién reportadas por Studio: " + JSON.stringify({
 							successful: report.successful,
 							failed: report.failed,
-							actions: (report.actions || []).slice(0, 100)
+							actions: (report.actions || []).slice(0, 35)
 						}),
 						"METADATOS DE LA ESCENA PROYECTADA (propiedades reales, no píxeles del render):",
 						detalleEscena || "[No se recibió resumen estructural.]"
