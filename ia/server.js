@@ -3307,31 +3307,61 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 							);
 
 							if (contieneImagen && process.env.NVIDIA_API_KEY?.trim()) {
-								const analisisVisual = await analizarReferenciaVisual(messages);
-								const mensajesTextuales = finalMessages.map((message) => {
-									if (!Array.isArray(message?.content)) return message;
-									const tieneImagen = message.content.some((part) => part?.type === "image_url");
-									if (!tieneImagen) return message;
-
-										const texto = message.content
-										.filter((part) => part?.type === "text")
-										.map((part) => String(part.text || ""))
-										.join("\n")
-										.replace(/(?:^|\n)\s*@img:\s*(?:"[^"]+"|'[^']+'|[^\s]+)\s*/gi, "\n")
-	.trim();
-
-	return {
-		...message,
-		content: [
-		texto,
-		"ANÁLISIS VISUAL DE LA IMAGEN (descripción observada):",
-		analisisVisual,
-		"Usa esta descripción como referencia visual. Genera las acciones ejecutables según el contexto real del proyecto."
-		].filter(Boolean).join("\n\n")
-	};
+	const analisisVisual = await analizarReferenciaVisual(messages);
+	const mensajesPreparados = finalMessages.map((message) => {
+		if (!Array.isArray(message?.content)) return message;
+		const partesImagen = message.content.filter((part) => part?.type === "image_url" && typeof part.image_url?.url === "string");
+		const texto = message.content
+			.filter((part) => part?.type === "text")
+			.map((part) => String(part.text || ""))
+			.join("\n")
+			.replace(/(?:^|\n)\s*@img:\s*(?:"[^"]+"|'[^']+'|[^\s]+)\s*/gi, "\n")
+			.trim();
+		if (partesImagen.length === 0) return message;
+		const textoEnriquecido = [
+			texto,
+			"ANÁLISIS VISUAL DE LA IMAGEN (especificación observada):",
+			analisisVisual,
+			"Usa la imagen original y esta especificación. Prioriza la silueta y los rasgos distintivos de la referencia; no inventes objetos ni posiciones que la contradigan."
+		].filter(Boolean).join("\n\n");
+		if (OMNIROUTE_VISION_MODEL) {
+			return {
+				...message,
+				content: [
+					{ type: "text", text: textoEnriquecido },
+					...partesImagen
+				]
+			};
+		}
+		return { ...message, content: textoEnriquecido };
 	});
 
-	console.log("[RobloxAI] Enviando al modelo de VFX solo texto + análisis visual; la imagen no se reenvía en la corrección.");
+	if (OMNIROUTE_VISION_MODEL) {
+		try {
+			console.log("[RobloxAI] Constructor multimodal: enviando imagen original + análisis visual al modelo visual de OmniRoute.");
+			return await preguntarOmniRoute(mensajesPreparados, {
+				model: OMNIROUTE_VISION_MODEL,
+				json: true,
+				reasoningEffort: "none",
+				reasoningFormat: "hidden",
+				temperature: 0.1,
+				timeoutMs: Number(process.env.OMNIROUTE_TIMEOUT_MS || 300000),
+				attemptsPerKey: 2
+			});
+		} catch (error) {
+			console.warn("[RobloxAI] El constructor multimodal falló; se intentará el modelo de texto con la especificación visual.", error instanceof Error ? error.message : String(error));
+		}
+	}
+
+	const mensajesTextuales = mensajesPreparados.map((message) => {
+		if (!Array.isArray(message?.content)) return message;
+		const texto = message.content
+			.filter((part) => part?.type === "text")
+			.map((part) => String(part.text || ""))
+			.join("\n");
+		return { ...message, content: texto };
+	});
+	console.log("[RobloxAI] Enviando análisis visual estructurado al constructor de texto; no se configuró un constructor multimodal disponible.");
 	return preguntarOmniRoute(mensajesTextuales, {
 		json: true,
 		reasoningEffort: "none",
@@ -3340,8 +3370,7 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 		timeoutMs: Number(process.env.OMNIROUTE_TIMEOUT_MS || 300000),
 		attemptsPerKey: 2
 	});
-	}
-
+}
 	if (contieneImagen && !OMNIROUTE_VISION_MODEL) {
 		throw new Error(
 			"Hay una imagen adjunta, pero no se ha configurado un modelo visual válido. " +
