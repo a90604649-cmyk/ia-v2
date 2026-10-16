@@ -179,7 +179,7 @@ const EXTENDED_MARKER =
 "No envíes NumberSequence, ColorSequence o NumberRange como cadenas de texto; usa los objetos tipados descritos arriba",
 "",
 "LÍMITES ACTUALES:",
-"El bridge puede aplicar acciones y comprobar estructura/propiedades, y SI dispone de un bucle de captura visual: al terminar de aplicar cambios encuadra la camara, captura el viewport real de Studio y lo envia al servidor para compararlo con la imagen de referencia",
+"El bridge puede aplicar acciones y comprobar estructura/propiedades, y dispone de un bucle de revisión mediante una PROYECCIÓN SINTÉTICA. No es una captura del viewport renderizado y no permite verificar sombras, texturas reales ni partículas simuladas.",
 "No digas que capturaste una imagen, inspeccionaste el viewport, ejecutaste una animación o validaste la calidad visual si no hay evidencia real de ello",
 "Para una primera versión, prioriza efectos editables y visibles en el viewport de Studio sin pulsar Play No uses run_studio_test como requisito para un efecto estático de edición",
 "",
@@ -216,7 +216,7 @@ const EXTENDED_MARKER =
 "4) Usa la PALETA observada: color dominante en Decal.Color3 y en ParticleEmitter.Color, acento en el nucleo y en PointLight.Color.",
 "5) Solo despues anade las particulas: un Attachment por cada zona del analisis (centro, borde, nucleo, base), ParticleEmitter con lo que el analisis diga que emite cada zona, y una PointLight del color del nucleo. Las particulas acompanan a la geometria, nunca la sustituyen.",
 "6) Si el proyecto ya tiene un efecto parecido en Workspace, revisa su ESTRUCTURA REAL (Partes, Decals, emisores y sus propiedades) y trabaja sobre ese en vez de duplicarlo. El nombre de un objeto no indica si sirve.",
-"7) Tras construir, el bridge captura el viewport y te envia la imagen del resultado. Comparala con la referencia y corrige SOLO lo que no coincida; si ya coincide, devuelve actions: [].",
+"7) Tras construir, el bridge envía una proyección sintética y un resumen de propiedades. Usa ambos para buscar diferencias de forma, tamaño, posición y paleta, pero NO afirmes haber visto el render real ni juzgues texturas o sombras reales. No inventes ajustes para detalles que la representación no pueda mostrar.",
 
 
 "JERARQUIA OBLIGATORIA:",
@@ -828,6 +828,7 @@ const CHAT_SYSTEM = [
 
 								let catalogoTexturasProyecto = [];
 								const esperasTexturas = new Map();
+const esperasModelos = new Map();
 
 								function leerCacheTexturas() {
 									try {
@@ -1094,7 +1095,48 @@ const CHAT_SYSTEM = [
 																			}));
 																			}
 
-	async function buscarTexturasVerificadas(keyword, tipo = "textura") {
+	function esperarVerificacionModelos(requestId, timeoutMs) {
+	return new Promise((resolve) => {
+		const timer = setTimeout(() => {
+			esperasModelos.delete(requestId);
+			resolve(null);
+		}, timeoutMs);
+		esperasModelos.set(requestId, (results) => {
+			clearTimeout(timer);
+			resolve(results);
+		});
+	});
+}
+
+async function verificarModelosEnStudio(candidatos) {
+	if (!Array.isArray(candidatos) || candidatos.length === 0) return [];
+	const requestId = `model_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+	const espera = esperarVerificacionModelos(requestId, 60000);
+	pendingActions.push({
+		type: "verify_models",
+		requestId,
+		models: candidatos.slice(0, 6).map((item) => ({
+			id: String(item.id),
+			nombre: String(item.nombre || "")
+		}))
+	});
+	const respuesta = await espera;
+	if (!Array.isArray(respuesta)) {
+		console.warn("[RobloxAI] Studio no respondió la validación de modelos; se descartan.");
+		return [];
+	}
+	return respuesta
+		.filter((item) => item && item.validado === true && normalizarIdTextura(item.id))
+		.map((item) => ({
+			id: normalizarIdTextura(item.id),
+			nombre: String(item.nombre || ""),
+			validado: true,
+			partes: Math.max(0, Number(item.partes) || 0),
+			emisores: Math.max(0, Number(item.emisores) || 0)
+		}));
+}
+
+async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 																		const clave = claveBusqueda(keyword);
 
 																		if (!clave) {
@@ -1107,6 +1149,7 @@ const CHAT_SYSTEM = [
 
 																				if (
 																					enCache &&
+																					(tipo !== "modelo" || (Array.isArray(enCache.textures) && enCache.textures.every((item) => item && item.validado === true))) &&
 																					Date.now() - Number(enCache.at || 0) < 7 * 24 * 60 * 60 * 1000
 																					) {
 																						console.log(
@@ -1122,10 +1165,11 @@ const CHAT_SYSTEM = [
 																						}
 
 																						const validadas = tipo === "modelo"
-? candidatos
-: await verificarTexturasEnStudio(candidatos);
+																							? await verificarModelosEnStudio(candidatos.slice(0, 6))
+																							: await verificarTexturasEnStudio(candidatos);
 
 																						if (validadas.length === 0) {
+																							console.warn(`[RobloxAI] Ningún candidato de ${tipo} quedó validado en Studio; se descartan los resultados.`);
 																							return null;
 																							}
 
@@ -3871,107 +3915,130 @@ const CHAT_SYSTEM = [
 				);
 
 				async function evaluarCapturaVFX(report) {
-					if (!lastVisualCapture || visualReviewCycles >= MAX_VISUAL_REVIEW_CYCLES) return;
-					if (Date.now() - lastVisualCapture.receivedAt > 90000) return;
+	if (!lastVisualCapture || visualReviewCycles >= MAX_VISUAL_REVIEW_CYCLES) return;
+	if (Date.now() - lastVisualCapture.receivedAt > 90000) {
+		lastVisualCapture = null;
+		return;
+	}
 
-						visualReviewCycles += 1;
-						const capture = lastVisualCapture;
-						const prompt = [
-						"REVISIÓN VISUAL DEL EFECTO EN ROBLOX STUDIO.",
-						`Resultado estructural reportado por Studio: ${report.successful} acciones correctas y ${report.failed} fallidas.`,
-						"Compara el resultado construido con la imagen de referencia y corrige SOLO lo que no coincida.",
-						"Si el efecto ya se ve coherente con la referencia, devuelve actions: [].",
-						"Si necesita mejoras, aplica cambios pequeños y concretos con acciones de instancias/propiedades; no crees scripts, remotes ni pruebas de juego.",
-						"No borres objetos. No inventes detalles que no aparezcan en la captura.",
-						"Devuelve JSON válido con reply y actions."
-						].join("\n");
+	// Consumir cada captura una sola vez evita revisar acciones posteriores con píxeles viejos.
+	const capture = lastVisualCapture;
+	lastVisualCapture = null;
+	visualReviewCycles += 1;
 
-						let diagnostico = "";
-						try {
-							const referencia = referenciaVisualActual;
-							if (referencia) {
-								const instrucciones = [
-								"Eres un revisor técnico de VFX para Roblox Studio.",
-								"Recibes DOS imágenes: la primera es el resultado construido en Studio ahora, la segunda es la imagen de referencia original que hay que replicar.",
-								`PROCEDENCIA DE LA IMAGEN DE STUDIO: ${capture.tipo}. ${capture.nota || ""}`,
-								"Si la procedencia es 'proyeccion', esa imagen NO es una foto del render: es la geometria real del efecto proyectada sobre el plano de la camara. Juzga silueta, numero de capas, radios, proporciones, posiciones, colores y brillo; no hables de sombras, texturas, reflejos ni oclusiones.",
-								"Compara silueta, numero de capas, proporciones relativas, plano, paleta, brillo y partículas.",
-								"Termina con una lista concreta de diferencias reales y, en cada una, el ajuste exacto que habría que hacer en Studio."
-								].join("\n");
-								const comparacionMensajes = [
-									{ role: "system", content: instrucciones },
-									{
-										role: "user",
-										content: [
-										{ type: "text", text: "Compara el resultado (primera imagen) con la referencia (segunda imagen)." },
-										{ type: "image_url", image_url: { url: capture.dataUrl } },
-										{ type: "image_url", image_url: { url: referencia } }
-										]
-									}
-								];
-								let comparacion;
-								try {
-									comparacion = await preguntarNvidiaVision(comparacionMensajes);
-								} catch (primaryError) {
-									if (!NVIDIA_VISION_FALLBACK_MODEL || NVIDIA_VISION_FALLBACK_MODEL === NVIDIA_VISION_MODEL) throw primaryError;
-										console.warn(`[RobloxAI] Revisión visual: el modelo principal falló; probando alternativa ${NVIDIA_VISION_FALLBACK_MODEL}...`);
-										comparacion = await preguntarNvidiaVision(comparacionMensajes, NVIDIA_VISION_FALLBACK_MODEL);
-								}
-								diagnostico = [
-								"DIAGNÓSTICO AUTOMÁTICO (captura real del viewport comparada con la imagen de referencia original):",
-								comparacion,
-								"Corrige SOLO lo que este diagnóstico marque como diferencia real; si ya coincide, devuelve actions: []."
-								].join("\n\n");
-								console.log("[RobloxAI] Diagnóstico visual recibido; se pasa al constructor de acciones.");
-							} else {
-								console.log("[RobloxAI] Sin imagen de referencia guardada; la revisión usa solo la captura.");
-							}
-						} catch (error) {
-							console.warn(
-								"[RobloxAI] No se pudo comparar la captura con la referencia:",
-								error instanceof Error ? error.message : String(error)
-							);
-						}
+	const referencia = referenciaVisualActual;
+	if (!referencia) {
+		console.warn("[RobloxAI] No hay referencia original guardada; se omite la corrección visual.");
+		return;
+	}
 
-						try {
-							const texto = await preguntarOmniRoute(
-								[
-								{ role: "system", content: VFX_SYSTEM },
-								{
-									role: "user",
-									content: [
-									{ type: "text", text: [prompt, diagnostico].filter(Boolean).join("\n\n") }
-									]
-								}
-								],
-								{
-									json: true,
-									reasoningEffort: "none",
-									reasoningFormat: "hidden",
-									temperature: 0.1,
-									timeoutMs: Math.min(Number(process.env.OMNIROUTE_TIMEOUT_MS || 120000), 120000),
-									attemptsPerKey: 1
-								}
-							);
+	const esProyeccion = capture.tipo === "proyeccion";
+	const instrucciones = [
+		"Eres un revisor técnico de VFX para Roblox Studio.",
+		"Recibes una representación sintética del efecto generado y la imagen de referencia original.",
+		"PROCEDENCIA: " + String(capture.tipo || "desconocido") + ". " + String(capture.nota || ""),
+		esProyeccion
+			? "La imagen del efecto es una proyección geométrica aproximada, NO una captura renderizada de Studio. No puedes comprobar iluminación real, sombras, píxeles reales de Decal/Texture, forma exacta de MeshPart, transparencias complejas ni partículas simuladas."
+			: "No asumas que la imagen representa un render real salvo que la procedencia lo confirme.",
+		"Usa la proyección solo para valorar composición aproximada, proporciones, posiciones, colores, forma general de piezas y trazos aproximados de Beam/Trail.",
+		"Usa el resumen estructural adjunto para interpretar Attachments, ParticleEmitters, Beam, Trail, luces, Decal/Texture y propiedades que no se rasterizan fielmente.",
+		"No confundas un rectángulo tintado que representa una superficie texturada con la textura real.",
+		"No inventes diferencias ni realices cambios basados en detalles invisibles en estos datos.",
+		"Devuelve diferencias concretas solo si están respaldadas por la proyección o los metadatos; si no, indica que no hay evidencia suficiente y devuelve actions: []."
+	].join("\n");
 
-							const result = extraerResultado(texto, {
-								repairMode: false,
-								soloAnalisis: false,
-								mensajeUsuario: "Revisión visual automática del VFX; no borrar objetos."
-							});
+	const detalleEscena = String(capture.sceneSummary || "").slice(0, 18000);
+	const comparacionMensajes = [
+		{ role: "system", content: instrucciones },
+		{
+			role: "user",
+			content: [
+				{
+					type: "text",
+					text: [
+						"Compara la primera imagen (proyección aproximada del resultado) con la segunda imagen (referencia original).",
+						"Acciones recién reportadas por Studio: " + JSON.stringify({
+							successful: report.successful,
+							failed: report.failed,
+							actions: (report.actions || []).slice(0, 100)
+						}),
+						"METADATOS DE LA ESCENA PROYECTADA (propiedades reales, no píxeles del render):",
+						detalleEscena || "[No se recibió resumen estructural.]"
+					].join("\n\n")
+				},
+				{ type: "image_url", image_url: { url: capture.dataUrl } },
+				{ type: "image_url", image_url: { url: referencia } }
+			]
+		}
+	];
 
-							if (!result || result.actions.length === 0) {
-								console.log("[RobloxAI] Revisión visual completada: no se solicitaron más cambios.");
-								return;
-								}
+	let comparacion;
+	try {
+		comparacion = await preguntarNvidiaVision(comparacionMensajes);
+	} catch (primaryError) {
+		if (!NVIDIA_VISION_FALLBACK_MODEL || NVIDIA_VISION_FALLBACK_MODEL === NVIDIA_VISION_MODEL) {
+			console.warn("[RobloxAI] Revisión omitida: el modelo visual principal falló.", primaryError instanceof Error ? primaryError.message : String(primaryError));
+			return;
+		}
+		try {
+			console.warn(`[RobloxAI] El modelo visual principal falló; probando alternativa ${NVIDIA_VISION_FALLBACK_MODEL}...`);
+			comparacion = await preguntarNvidiaVision(comparacionMensajes, NVIDIA_VISION_FALLBACK_MODEL);
+		} catch (fallbackError) {
+			console.warn("[RobloxAI] Revisión omitida: ambos modelos visuales fallaron.", fallbackError instanceof Error ? fallbackError.message : String(fallbackError));
+			return;
+		}
+	}
 
-								pendingActions = result.actions;
-								console.log(`[RobloxAI] Revisión visual ${visualReviewCycles}/${MAX_VISUAL_REVIEW_CYCLES}: ${pendingActions.length} ajuste(s) listos para Studio.`);
-								console.log(result.reply || "Ajustes visuales preparados.");
-						} catch (error) {
-							console.warn("[RobloxAI] No se pudo evaluar la captura con el modelo configurado. Puede que el modelo seleccionado no admita imágenes:", error instanceof Error ? error.message : String(error));
-						}
-						}
+	const diagnostico = [
+		"DIAGNÓSTICO COMPARATIVO BASADO EN PROYECCIÓN SINTÉTICA (no es una captura real del viewport):",
+		comparacion,
+		"Corrige solo diferencias respaldadas por la evidencia. Si la proyección o los metadatos no permiten justificar un cambio, devuelve actions: []."
+	].join("\n\n");
+
+	try {
+		const texto = await preguntarOmniRoute(
+			[
+				{ role: "system", content: VFX_SYSTEM },
+				{
+					role: "user",
+					content: [
+						{ type: "text", text: [
+							"REVISIÓN DESPUÉS DE UNA TANDA DE CAMBIOS.",
+							"Resultado estructural: " + report.successful + " acciones correctas y " + report.failed + " fallidas.",
+							"Resumen real de instancias y propiedades:",
+							detalleEscena || "[sin resumen estructural]",
+							diagnostico,
+							"No borres objetos ni crees scripts/remotes. No declares verificado lo que solo sea una estimación."
+						].join("\n\n") }
+					]
+				}
+			],
+			{
+				json: true,
+				reasoningEffort: "none",
+				reasoningFormat: "hidden",
+				temperature: 0.1,
+				timeoutMs: Math.min(Number(process.env.OMNIROUTE_TIMEOUT_MS || 120000), 120000),
+				attemptsPerKey: 1
+			}
+		);
+		const result = extraerResultado(texto, {
+			repairMode: false,
+			soloAnalisis: false,
+			mensajeUsuario: "Revisión aproximada de VFX; no borrar objetos."
+		});
+		if (!result || result.actions.length === 0) {
+			console.log("[RobloxAI] Revisión aproximada terminada: no se justificaron más cambios.");
+			return;
+		}
+		pendingActions = result.actions;
+		console.log(`[RobloxAI] Revisión aproximada ${visualReviewCycles}/${MAX_VISUAL_REVIEW_CYCLES}: ${pendingActions.length} ajuste(s) listos para Studio.`);
+		console.log(result.reply || "Ajustes visuales preparados.");
+	} catch (error) {
+		console.warn("[RobloxAI] No se pudieron convertir las diferencias en acciones; no se generaron correcciones a ciegas.", error instanceof Error ? error.message : String(error));
+	}
+}
+
 
 					app.post(
 						"/visual-capture",
@@ -3986,7 +4053,8 @@ const CHAT_SYSTEM = [
 									receivedAt: Date.now(),
 									resolution: data.resolution || null,
 									tipo: typeof data.tipo === "string" ? data.tipo : "desconocido",
-									nota: typeof data.nota === "string" ? data.nota.slice(0, 400) : ""
+									nota: typeof data.nota === "string" ? data.nota.slice(0, 700) : "",
+									sceneSummary: typeof data.sceneSummary === "string" ? data.sceneSummary.slice(0, 18000) : ""
 								};
 								console.log(`[RobloxAI] Imagen de revision recibida desde Studio (tipo: ${lastVisualCapture.tipo}).`);
 								return res.json({ ok: true });
@@ -4033,6 +4101,22 @@ const CHAT_SYSTEM = [
 								`[RobloxAI] 📚 Catálogo de texturas recibido: ${catalogoTexturasProyecto.length} textura(s).`
 							);
 							res.json({ ok: true, total: catalogoTexturasProyecto.length });
+						}
+					);
+
+					app.post(
+						"/model-validation",
+						(req, res) => {
+							const data = req.body || {};
+							const requestId = String(data.requestId || data.request_id || "");
+							const espera = esperasModelos.get(requestId);
+							if (!espera) {
+								return res.status(404).json({ ok: false, error: "No hay una verificación de modelos pendiente para ese requestId." });
+							}
+							esperasModelos.delete(requestId);
+							const resultados = Array.isArray(data.results) ? data.results.slice(0, 20) : [];
+							espera(resultados);
+							return res.json({ ok: true, total: resultados.length });
 						}
 					);
 
