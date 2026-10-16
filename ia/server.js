@@ -1583,8 +1583,10 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 		const imagen = extraerImagenDelMensaje(mensajeUsuario);
 
 		if (!imagen) {
+			// Evita reutilizar una imagen anterior en una petición sin referencia.
+			referenciaVisualActual = null;
 			return contenido;
-			}
+		}
 
 			console.log(
 							"[RobloxAI] Imagen de referencia incluida en la petición."
