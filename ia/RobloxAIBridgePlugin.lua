@@ -5,7 +5,6 @@ local ScriptEditorService = game:GetService("ScriptEditorService")
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local StudioTestService = game:GetService("StudioTestService")
 local LogService = game:GetService("LogService")
-local CaptureService = game:GetService("CaptureService")
 
 local BASE_URL = "http://127.0.0.1:3000"
 local NEXT_URL = BASE_URL .. "/next"
