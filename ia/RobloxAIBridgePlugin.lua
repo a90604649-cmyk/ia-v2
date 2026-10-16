@@ -1446,26 +1446,28 @@ local function ejecutarInsercionModelo(action)
 
 	local partes = 0
 	local emisores = 0
+	local inseguro = false
 
 	local function inspeccionar(instancia)
-		if instancia:IsA("BasePart") or instancia:IsA("Light") then
+		if instancia:IsA("Script") or instancia:IsA("LocalScript") or instancia:IsA("ModuleScript")
+			or instancia:IsA("RemoteEvent") or instancia:IsA("RemoteFunction") then
+			inseguro = true
+		elseif instancia:IsA("BasePart") then
 			partes += 1
-		elseif instancia:IsA("ParticleEmitter") or instancia:IsA("Beam") or instancia:IsA("Trail") then
+		elseif instancia:IsA("ParticleEmitter") or instancia:IsA("Beam") or instancia:IsA("Trail")
+			or instancia:IsA("Light") or instancia:IsA("Decal") or instancia:IsA("Texture") then
 			emisores += 1
 		end
 	end
 
-	if modelo:IsA("Model") then
-		for _, descendiente in ipairs(modelo:GetDescendants()) do
-			inspeccionar(descendiente)
-		end
-	else
-		inspeccionar(modelo)
+	inspeccionar(modelo)
+	for _, descendiente in ipairs(modelo:GetDescendants()) do
+		inspeccionar(descendiente)
 	end
 
-	if partes == 0 and emisores == 0 then
+	if inseguro or (partes == 0 and emisores == 0) then
 		modelo:Destroy()
-		warn("[Roblox AI] Modelo del catálogo sin nada visual, no se insertó:", assetId)
+		warn("[Roblox AI] Modelo del catálogo sin contenido visual verificable o con scripts/remotes, no se insertó:", assetId)
 		return false
 	end
 
@@ -2852,7 +2854,18 @@ local function consultarServidor()
 	end
 
 	print("[Roblox AI] Resultado acciones: " .. exitosas .. " exitosas | " .. fallidas .. " fallidas")
-	if exitosas > 0 then
+
+	-- verify_textures/verify_models son tareas internas de búsqueda, no cambios de VFX.
+	-- No proyectar ni disparar una revisión visual vacía antes de que termine la búsqueda.
+	local requiereRevisionVisual = false
+	for _, resumen in ipairs(detalles) do
+		if resumen.ok and resumen.type ~= "verify_textures" and resumen.type ~= "verify_models" then
+			requiereRevisionVisual = true
+			break
+		end
+	end
+
+	if exitosas > 0 and requiereRevisionVisual then
 		enviarCapturaVisual(detalles, function()
 			informarResultadoAcciones(#data.actions, exitosas, fallidas, detalles)
 		end)
