@@ -1268,7 +1268,7 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 
 																				if (
 																					enCache &&
-																					(tipo !== "modelo" || (Array.isArray(enCache.textures) && enCache.textures.every((item) => item && item.validado === true))) &&
+																					(tipo !== "modelo" || (Array.isArray(enCache.textures) && enCache.textures.length > 0 && enCache.textures.every((item) => item && item.validado === true))) &&
 																					Date.now() - Number(enCache.at || 0) < 7 * 24 * 60 * 60 * 1000
 																					) {
 																						console.log(
