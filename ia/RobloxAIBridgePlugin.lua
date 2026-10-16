@@ -1985,6 +1985,41 @@ local function resolverRuta(ruta)
 	return actual
 end
 
+-- Resuelve el OBJETO afectado por una acción (path = contenedor, name = instancia).
+-- Nunca devuelve Workspace/otro contenedor cuando una instancia nombrada no existe:
+-- hacerlo haría que la proyección acabara recogiendo la escena entera.
+local function resolverObjetivoResumen(resumen)
+	if type(resumen) ~= "table" then
+		return nil
+	end
+
+	local ruta = tostring(resumen.path or "")
+	local nombre = tostring(resumen.name or "")
+	if nombre == "" then
+		return resolverRuta(ruta)
+	end
+
+	local directo = resolverRuta(ruta)
+	if directo and directo.Name == nombre then
+		return directo
+	end
+
+	if ruta ~= "" then
+		local objetivo = resolverRuta(ruta .. "/" .. nombre)
+		if objetivo then
+			return objetivo
+		end
+		if directo then
+			local hijo = directo:FindFirstChild(nombre)
+			if hijo then
+				return hijo
+			end
+		end
+	end
+
+	return nil
+end
+
 local function restaurarCamara()
 	if camaraPrevia then
 		local camara = workspace.CurrentCamera
@@ -2000,11 +2035,11 @@ local function encuadrarEfecto(detalles)
 	if not camara then
 		return
 	end
+
 	local minimo, maximo
 	local function extender(punto)
 		if not minimo then
-			minimo = punto
-			maximo = punto
+			minimo, maximo = punto, punto
 			return
 		end
 		minimo = Vector3.new(
@@ -2019,32 +2054,49 @@ local function encuadrarEfecto(detalles)
 		)
 	end
 
+	local function incluir(instancia)
+		if instancia:IsA("BasePart") then
+			local mitad = instancia.Size * 0.5
+			for sx = -1, 1, 2 do
+				for sy = -1, 1, 2 do
+					for sz = -1, 1, 2 do
+						extender(instancia.CFrame * Vector3.new(mitad.X * sx, mitad.Y * sy, mitad.Z * sz))
+					end
+				end
+			end
+		elseif instancia:IsA("Attachment") then
+			extender(instancia.WorldPosition)
+		end
+	end
+
+	local vistos = {}
 	for _, resumen in ipairs(detalles) do
 		if resumen.ok then
-			local objetivo = resolverRuta(resumen.path)
-			if not objetivo and type(resumen.name) == "string" and resumen.name ~= "" then
-				objetivo = workspace:FindFirstChild(resumen.name)
-			end
-			if objetivo and objetivo:IsA("BasePart") then
-				extender(objetivo.Position)
-			elseif objetivo and objetivo:IsA("Model") and objetivo.PrimaryPart then
-				extender(objetivo.PrimaryPart.Position)
+			local objetivo = resolverObjetivoResumen(resumen)
+			if objetivo and not vistos[objetivo] then
+				vistos[objetivo] = true
+				incluir(objetivo)
+				for _, descendiente in ipairs(objetivo:GetDescendants()) do
+					incluir(descendiente)
+				end
 			end
 		end
 	end
 
 	if not minimo or not maximo then
+		warn("[Roblox AI] No se pudo encuadrar el VFX: no se resolvieron instancias afectadas.")
 		return
 	end
 
 	local centro = (minimo + maximo) / 2
-	local tamano = (maximo - minimo).Magnitude
-	local distancia = math.clamp(tamano * 1.6 + 6, 8, 240)
+	local tamano = math.max(1, (maximo - minimo).Magnitude)
+	local distancia = tamano / (2 * math.tan(math.rad(camara.FieldOfView) / 2)) * 1.35 + 2
+	distancia = math.clamp(distancia, 6, 1000)
+
 	camaraPrevia = camara.CFrame
 	camara.CFrame = CFrame.lookAt(centro + Vector3.new(0.35, 0.3, 1).Unit * distancia, centro)
 	task.wait(0.1)
 end
-
 -- ============================================================
 -- IMAGEN DE REVISION
 -- ============================================================
@@ -2098,62 +2150,131 @@ end
 -- Reune la geometria real afectada por la ultima tanda de acciones.
 local function recolectarElementosVFX(detalles)
 	local vistos = {}
-	local partes, emisores, luces = {}, {}, {}
+	local partes, emisores, luces, beams, trails, attachments, superficies = {}, {}, {}, {}, {}, {}, {}
+
+	local function registrar(instancia)
+		if instancia:IsA("BasePart") then
+			table.insert(partes, instancia)
+		elseif instancia:IsA("ParticleEmitter") then
+			table.insert(emisores, instancia)
+		elseif instancia:IsA("Light") then
+			table.insert(luces, instancia)
+		elseif instancia:IsA("Beam") then
+			table.insert(beams, instancia)
+		elseif instancia:IsA("Trail") then
+			table.insert(trails, instancia)
+		elseif instancia:IsA("Attachment") then
+			table.insert(attachments, instancia)
+		elseif instancia:IsA("Decal") or instancia:IsA("Texture") then
+			table.insert(superficies, instancia)
+		end
+	end
 
 	local function visitar(instancia)
 		if not instancia or vistos[instancia] then
 			return
 		end
 		vistos[instancia] = true
-
-		if instancia:IsA("BasePart") then
-			table.insert(partes, instancia)
-		end
-
+		registrar(instancia)
 		for _, hijo in ipairs(instancia:GetDescendants()) do
-			if vistos[hijo] then
-				continue
-			end
-			vistos[hijo] = true
-			if hijo:IsA("BasePart") then
-				table.insert(partes, hijo)
-			elseif hijo:IsA("ParticleEmitter") then
-				table.insert(emisores, hijo)
-			elseif hijo:IsA("Light") then
-				table.insert(luces, hijo)
+			if not vistos[hijo] then
+				vistos[hijo] = true
+				registrar(hijo)
 			end
 		end
 	end
 
 	for _, resumen in ipairs(detalles) do
 		if resumen.ok then
-			local objetivo = resolverRuta(resumen.path)
-			if not objetivo and type(resumen.name) == "string" and resumen.name ~= "" then
-				objetivo = workspace:FindFirstChild(resumen.name)
-			end
-			visitar(objetivo)
+			visitar(resolverObjetivoResumen(resumen))
 		end
 	end
 
-	return {partes = partes, emisores = emisores, luces = luces}
+	return {
+		partes = partes,
+		emisores = emisores,
+		luces = luces,
+		beams = beams,
+		trails = trails,
+		attachments = attachments,
+		superficies = superficies
+	}
 end
 
--- Dibuja en un buffer RGBA lo que la camara actual veria de esa geometria.
-local function proyectarEscena(elementos, anchoObjetivo)
-	local camara = workspace.CurrentCamera
-	if not camara then
-		return nil
+-- Envía metadatos visuales reales junto a la proyección. Ayudan a interpretar
+-- attachments, texturas y clases que el dibujo sintético no puede rasterizar fielmente.
+local function resumirElementosVFX(elementos)
+	local lineas = {}
+	local vistos = {}
+	local function agregar(instancia, texto)
+		if #lineas >= 100 or vistos[instancia] then
+			return
+		end
+		vistos[instancia] = true
+		lineas[#lineas + 1] = instancia:GetFullName() .. " | " .. texto
+	end
+	local function colorTexto(color)
+		return string.format("#%02X%02X%02X", math.floor(color.R * 255 + 0.5), math.floor(color.G * 255 + 0.5), math.floor(color.B * 255 + 0.5))
+	end
+	local function obtener(instancia, propiedad, defecto)
+		local ok, valor = pcall(function() return instancia[propiedad] end)
+		if ok and valor ~= nil then return tostring(valor) end
+		return defecto or "?"
 	end
 
-	local vista = camara.ViewportSize
-	if vista.X < 1 or vista.Y < 1 then
-		return nil
+	for _, parte in ipairs(elementos.partes) do
+		local forma = parte:IsA("Part") and obtener(parte, "Shape", "?") or parte.ClassName
+		agregar(parte, string.format("PART clase=%s pos=%s size=%s color=%s material=%s transparency=%s shape=%s",
+			parte.ClassName, tostring(parte.Position), tostring(parte.Size), colorTexto(parte.Color),
+			tostring(parte.Material), tostring(parte.Transparency), forma))
 	end
+	for _, attachment in ipairs(elementos.attachments) do
+		agregar(attachment, "ATTACHMENT worldPosition=" .. tostring(attachment.WorldPosition))
+	end
+	for _, emisor in ipairs(elementos.emisores) do
+		agregar(emisor, string.format("PARTICLE enabled=%s rate=%s texture=%s color=%s size=%s speed=%s lifetime=%s lightEmission=%s",
+			tostring(emisor.Enabled), tostring(emisor.Rate), tostring(emisor.Texture), obtener(emisor, "Color"),
+			obtener(emisor, "Size"), tostring(emisor.Speed), tostring(emisor.Lifetime), tostring(emisor.LightEmission)))
+	end
+	for _, luz in ipairs(elementos.luces) do
+		agregar(luz, string.format("LIGHT enabled=%s color=%s brightness=%s range=%s",
+			tostring(luz.Enabled), colorTexto(luz.Color), tostring(luz.Brightness), tostring(luz.Range)))
+	end
+	for _, beam in ipairs(elementos.beams) do
+		agregar(beam, string.format("BEAM enabled=%s attachment0=%s attachment1=%s width0=%s width1=%s texture=%s color=%s transparency=%s",
+			tostring(beam.Enabled), beam.Attachment0 and beam.Attachment0:GetFullName() or "?",
+			beam.Attachment1 and beam.Attachment1:GetFullName() or "?", tostring(beam.Width0), tostring(beam.Width1),
+			tostring(beam.Texture), tostring(beam.Color), tostring(beam.Transparency)))
+	end
+	for _, trail in ipairs(elementos.trails) do
+		agregar(trail, string.format("TRAIL enabled=%s attachment0=%s attachment1=%s lifetime=%s texture=%s color=%s widthScale=%s",
+			tostring(trail.Enabled), trail.Attachment0 and trail.Attachment0:GetFullName() or "?",
+			trail.Attachment1 and trail.Attachment1:GetFullName() or "?", tostring(trail.Lifetime),
+			tostring(trail.Texture), tostring(trail.Color), tostring(trail.WidthScale)))
+	end
+	for _, superficie in ipairs(elementos.superficies) do
+		agregar(superficie, string.format("SURFACE clase=%s face=%s texture=%s color=%s transparency=%s",
+			superficie.ClassName, obtener(superficie, "Face"), obtener(superficie, "Texture"),
+			obtener(superficie, "Color3", obtener(superficie, "Color")), obtener(superficie, "Transparency")))
+	end
+
+	local texto = table.concat(lineas, "\n")
+	if #texto > 18000 then
+		texto = string.sub(texto, 1, 18000) .. "\n[resumen truncado]"
+	end
+	return texto
+end
+
+-- Proyección sintética: no sustituye el render de Studio y no lee píxeles reales.
+local function proyectarEscena(elementos, anchoObjetivo)
+	local camara = workspace.CurrentCamera
+	if not camara then return nil end
+	local vista = camara.ViewportSize
+	if vista.X < 1 or vista.Y < 1 then return nil end
 
 	local ancho = math.max(8, math.min(anchoObjetivo, math.floor(vista.X)))
 	local alto = math.max(8, math.floor(ancho * vista.Y / vista.X))
 	local pixeles = buffer.create(ancho * alto * 4)
-
 	for i = 0, ancho * alto - 1 do
 		buffer.writeu8(pixeles, i * 4, 16)
 		buffer.writeu8(pixeles, i * 4 + 1, 17)
@@ -2164,150 +2285,321 @@ local function proyectarEscena(elementos, anchoObjetivo)
 	local escalaX = ancho / vista.X
 	local escalaY = alto / vista.Y
 	local fov = math.rad(camara.FieldOfView)
-
 	local function pixelesPorStud(distancia)
-		if distancia <= 0.01 then
-			return alto
-		end
+		if distancia <= 0.01 then return alto end
 		return alto / (2 * distancia * math.tan(fov / 2))
 	end
-
-	local function cajaDeParte(parte)
-		local c = parte.CFrame
-		local e = parte.Size * 0.5
-		local minimo, maximo, profundidad
-		for sx = -1, 1, 2 do
-			for sy = -1, 1, 2 do
-				for sz = -1, 1, 2 do
-					local p = camara:WorldToViewportPoint(c * Vector3.new(e.X * sx, e.Y * sy, e.Z * sz))
-					if p.Z > 0 then
-						local punto = Vector2.new(p.X * escalaX, p.Y * escalaY)
-						minimo = minimo
-							and Vector2.new(math.min(minimo.X, punto.X), math.min(minimo.Y, punto.Y))
-							or punto
-						maximo = maximo
-							and Vector2.new(math.max(maximo.X, punto.X), math.max(maximo.Y, punto.Y))
-							or punto
-						profundidad = profundidad and math.min(profundidad, p.Z) or p.Z
-					end
-				end
-			end
-		end
-		if not minimo then
-			return nil
-		end
-		return minimo, maximo, profundidad
+	local function proyectarPunto(posicion)
+		local p = camara:WorldToViewportPoint(posicion)
+		if p.Z <= 0.01 then return nil end
+		return {punto = Vector2.new(p.X * escalaX, p.Y * escalaY), z = p.Z}
 	end
-
-	local function pintarPixel(x, y, r, g, b, a)
-		if a <= 0 or x < 0 or y < 0 or x >= ancho or y >= alto then
-			return
-		end
+	local function pintarPixel(x, y, r, g, b, alfa)
+		if alfa <= 0 or x < 0 or y < 0 or x >= ancho or y >= alto then return end
 		local i = (y * ancho + x) * 4
 		local fr = buffer.readu8(pixeles, i) / 255
 		local fg = buffer.readu8(pixeles, i + 1) / 255
 		local fb = buffer.readu8(pixeles, i + 2) / 255
-		buffer.writeu8(pixeles, i, math.clamp(math.floor((r * a + fr * (1 - a)) * 255 + 0.5), 0, 255))
-		buffer.writeu8(pixeles, i + 1, math.clamp(math.floor((g * a + fg * (1 - a)) * 255 + 0.5), 0, 255))
-		buffer.writeu8(pixeles, i + 2, math.clamp(math.floor((b * a + fb * (1 - a)) * 255 + 0.5), 0, 255))
+		buffer.writeu8(pixeles, i, math.clamp(math.floor((r * alfa + fr * (1 - alfa)) * 255 + 0.5), 0, 255))
+		buffer.writeu8(pixeles, i + 1, math.clamp(math.floor((g * alfa + fg * (1 - alfa)) * 255 + 0.5), 0, 255))
+		buffer.writeu8(pixeles, i + 2, math.clamp(math.floor((b * alfa + fb * (1 - alfa)) * 255 + 0.5), 0, 255))
 	end
-
 	local function pintarCaja(minimo, maximo, color, alfa)
-		local x0 = math.max(0, math.floor(minimo.X))
-		local x1 = math.min(ancho - 1, math.ceil(maximo.X))
-		local y0 = math.max(0, math.floor(minimo.Y))
-		local y1 = math.min(alto - 1, math.ceil(maximo.Y))
+		local x0, x1 = math.max(0, math.floor(minimo.X)), math.min(ancho - 1, math.ceil(maximo.X))
+		local y0, y1 = math.max(0, math.floor(minimo.Y)), math.min(alto - 1, math.ceil(maximo.Y))
 		for y = y0, y1 do
 			for x = x0, x1 do
 				pintarPixel(x, y, color.R, color.G, color.B, alfa)
 			end
 		end
 	end
-
+	local function pintarPoligono(puntos, color, alfa)
+		if #puntos < 3 or alfa <= 0 then return end
+		local minY, maxY = alto - 1, 0
+		for _, p in ipairs(puntos) do
+			minY = math.min(minY, p.Y)
+			maxY = math.max(maxY, p.Y)
+		end
+		minY, maxY = math.max(0, math.floor(minY)), math.min(alto - 1, math.ceil(maxY))
+		for y = minY, maxY do
+			local scanY = y + 0.5
+			local cruces = {}
+			for i = 1, #puntos do
+				local a = puntos[i]
+				local b = puntos[i % #puntos + 1]
+				if (a.Y <= scanY and b.Y > scanY) or (b.Y <= scanY and a.Y > scanY) then
+					local t = (scanY - a.Y) / (b.Y - a.Y)
+					cruces[#cruces + 1] = a.X + t * (b.X - a.X)
+				end
+			end
+			table.sort(cruces)
+			for i = 1, #cruces - 1, 2 do
+				local x0 = math.max(0, math.ceil(cruces[i]))
+				local x1 = math.min(ancho - 1, math.floor(cruces[i + 1]))
+				for x = x0, x1 do
+					pintarPixel(x, y, color.R, color.G, color.B, alfa)
+				end
+			end
+		end
+	end
+	local function pintarElipse(centro, rx, ry, color, alfa)
+		rx, ry = math.max(1, rx), math.max(1, ry)
+		local x0, x1 = math.max(0, math.floor(centro.X - rx)), math.min(ancho - 1, math.ceil(centro.X + rx))
+		local y0, y1 = math.max(0, math.floor(centro.Y - ry)), math.min(alto - 1, math.ceil(centro.Y + ry))
+		for y = y0, y1 do
+			for x = x0, x1 do
+				local dx = (x + 0.5 - centro.X) / rx
+				local dy = (y + 0.5 - centro.Y) / ry
+				if dx * dx + dy * dy <= 1 then
+					pintarPixel(x, y, color.R, color.G, color.B, alfa)
+				end
+			end
+		end
+	end
+	local function pintarSegmento(a, b, radio, color, alfa)
+		radio = math.max(1, radio)
+		local x0, x1 = math.max(0, math.floor(math.min(a.X, b.X) - radio)), math.min(ancho - 1, math.ceil(math.max(a.X, b.X) + radio))
+		local y0, y1 = math.max(0, math.floor(math.min(a.Y, b.Y) - radio)), math.min(alto - 1, math.ceil(math.max(a.Y, b.Y) + radio))
+		local vx, vy = b.X - a.X, b.Y - a.Y
+		local largo2 = vx * vx + vy * vy
+		for y = y0, y1 do
+			for x = x0, x1 do
+				local t = largo2 > 0 and math.clamp(((x + 0.5 - a.X) * vx + (y + 0.5 - a.Y) * vy) / largo2, 0, 1) or 0
+				local dx, dy = x + 0.5 - (a.X + vx * t), y + 0.5 - (a.Y + vy * t)
+				if dx * dx + dy * dy <= radio * radio then
+					pintarPixel(x, y, color.R, color.G, color.B, alfa)
+				end
+			end
+		end
+	end
 	local function brilloRadial(centro, radio, color, intensidad)
-		local x0 = math.max(0, math.floor(centro.X - radio))
-		local x1 = math.min(ancho - 1, math.ceil(centro.X + radio))
-		local y0 = math.max(0, math.floor(centro.Y - radio))
-		local y1 = math.min(alto - 1, math.ceil(centro.Y + radio))
+		radio = math.max(1, radio)
+		local x0, x1 = math.max(0, math.floor(centro.X - radio)), math.min(ancho - 1, math.ceil(centro.X + radio))
+		local y0, y1 = math.max(0, math.floor(centro.Y - radio)), math.min(alto - 1, math.ceil(centro.Y + radio))
 		for y = y0, y1 do
 			for x = x0, x1 do
 				local dx, dy = x - centro.X, y - centro.Y
 				local d = math.sqrt(dx * dx + dy * dy) / radio
 				if d < 1 then
-					local a = intensidad * (1 - d) * (1 - d)
-					pintarPixel(x, y, color.R, color.G, color.B, a)
+					pintarPixel(x, y, color.R, color.G, color.B, intensidad * (1 - d) * (1 - d))
+				end
+			end
+		end
+	end
+	local function promedioColor(secuencia)
+		if typeof(secuencia) == "ColorSequence" then
+			local r, g, b, n = 0, 0, 0, 0
+			for _, punto in ipairs(secuencia.Keypoints) do
+				r, g, b, n = r + punto.Value.R, g + punto.Value.G, b + punto.Value.B, n + 1
+			end
+			if n > 0 then return Color3.new(r / n, g / n, b / n) end
+		elseif typeof(secuencia) == "Color3" then
+			return secuencia
+		end
+		return Color3.new(1, 1, 1)
+	end
+	local function promedioNumero(secuencia, defecto)
+		if typeof(secuencia) == "NumberSequence" then
+			local suma, n = 0, 0
+			for _, punto in ipairs(secuencia.Keypoints) do suma, n = suma + punto.Value, n + 1 end
+			if n > 0 then return suma / n end
+		elseif typeof(secuencia) == "number" then
+			return secuencia
+		elseif typeof(secuencia) == "NumberRange" then
+			return (secuencia.Min + secuencia.Max) / 2
+		end
+		return defecto or 1
+	end
+	local function opacidad(secuencia)
+		return math.clamp(1 - promedioNumero(secuencia, 0), 0, 1)
+	end
+	local function puntoVisual(instancia)
+		local padre = instancia and instancia.Parent
+		if padre and padre:IsA("Attachment") then return padre.WorldPosition end
+		if padre and padre:IsA("BasePart") then return padre.Position end
+		if instancia and instancia:IsA("Attachment") then return instancia.WorldPosition end
+		return nil
+	end
+	local function colorParte(parte)
+		local c = parte.Color
+		if parte.Material == Enum.Material.Neon or parte.Material == Enum.Material.Glass then
+			return Color3.new(math.min(1, c.R * 1.25 + 0.12), math.min(1, c.G * 1.25 + 0.12), math.min(1, c.B * 1.25 + 0.12))
+		end
+		return c
+	end
+
+	local signos = {
+		Vector3.new(-1, -1, -1), Vector3.new(-1, -1, 1),
+		Vector3.new(-1, 1, -1), Vector3.new(-1, 1, 1),
+		Vector3.new(1, -1, -1), Vector3.new(1, -1, 1),
+		Vector3.new(1, 1, -1), Vector3.new(1, 1, 1)
+	}
+	local caras = {
+		{1, 2, 4, 3}, {5, 7, 8, 6}, {1, 5, 6, 2},
+		{3, 4, 8, 7}, {1, 3, 7, 5}, {2, 6, 8, 4}
+	}
+	local caraPorNombre = {
+		Left = {1, 2, 4, 3}, Right = {5, 7, 8, 6},
+		Bottom = {1, 5, 6, 2}, Top = {3, 4, 8, 7},
+		Front = {1, 3, 7, 5}, Back = {2, 6, 8, 4}
+	}
+	local dibujos = {}
+	for _, parte in ipairs(elementos.partes) do
+		local mitad = parte.Size * 0.5
+		local proyecciones, puntosValidos = {}, {}
+		local minP, maxP, profundidad = nil, nil, nil
+		for indice, signo in ipairs(signos) do
+			local world = parte.CFrame * Vector3.new(mitad.X * signo.X, mitad.Y * signo.Y, mitad.Z * signo.Z)
+			local proy = proyectarPunto(world)
+			proyecciones[indice] = proy
+			if proy then
+				puntosValidos[#puntosValidos + 1] = proy
+				minP = minP and Vector2.new(math.min(minP.X, proy.punto.X), math.min(minP.Y, proy.punto.Y)) or proy.punto
+				maxP = maxP and Vector2.new(math.max(maxP.X, proy.punto.X), math.max(maxP.Y, proy.punto.Y)) or proy.punto
+				profundidad = profundidad and math.min(profundidad, proy.z) or proy.z
+			end
+		end
+		local alfa = math.clamp(1 - parte.Transparency, 0, 1)
+		local color = colorParte(parte)
+		local esBola = parte:IsA("Part") and parte.Shape == Enum.PartType.Ball
+		if alfa > 0 then
+			if #puntosValidos == 8 and esBola then
+				local centroProy = proyectarPunto(parte.Position)
+				if centroProy then
+					dibujos[#dibujos + 1] = {
+						kind = "ellipse", center = centroProy.punto,
+						rx = math.max(1, (maxP.X - minP.X) / 2), ry = math.max(1, (maxP.Y - minP.Y) / 2),
+						color = color, alpha = alfa, z = centroProy.z
+					}
+				end
+			elseif #puntosValidos == 8 then
+				for _, indices in ipairs(caras) do
+					local puntos, sumaZ, completos = {}, 0, true
+					for _, indice in ipairs(indices) do
+						local proy = proyecciones[indice]
+						if not proy then completos = false break end
+						puntos[#puntos + 1] = proy.punto
+						sumaZ += proy.z
+					end
+					if completos then
+						dibujos[#dibujos + 1] = {
+							kind = "polygon", points = puntos, color = color, alpha = alfa,
+							z = sumaZ / #indices
+						}
+					end
+				end
+			elseif minP and maxP then
+				dibujos[#dibujos + 1] = {kind = "rect", min = minP, max = maxP, color = color, alpha = alfa, z = profundidad or 1}
+			end
+		end
+
+		-- Los Decal/Texture no pueden rasterizarse aquí como píxeles reales.
+		-- Se dibuja solo un plano tintado tenue y se envía la URI al revisor.
+		if #puntosValidos == 8 then
+			for _, superficie in ipairs(parte:GetChildren()) do
+				if superficie:IsA("Decal") or superficie:IsA("Texture") then
+					local indices = caraPorNombre[tostring(superficie.Face)]
+					local uri = tostring(superficie.Texture or "")
+					if indices and uri ~= "" then
+						local puntos, sumaZ = {}, 0
+						for _, indice in ipairs(indices) do
+							puntos[#puntos + 1] = proyecciones[indice].punto
+							sumaZ += proyecciones[indice].z
+						end
+						local tintado = Color3.new(1, 1, 1)
+						if superficie:IsA("Decal") then tintado = superficie.Color3 end
+						local trans = superficie.Transparency or 0
+						dibujos[#dibujos + 1] = {
+							kind = "polygon", points = puntos, color = tintado,
+							alpha = math.clamp((1 - trans) * 0.18, 0.04, 0.18),
+							z = sumaZ / #indices + 0.001
+						}
+					end
 				end
 			end
 		end
 	end
 
-	local cajas = {}
-	for _, parte in ipairs(elementos.partes) do
-		local minimo, maximo, profundidad = cajaDeParte(parte)
-		if minimo then
-			table.insert(cajas, {parte = parte, minimo = minimo, maximo = maximo, profundidad = profundidad})
-		end
-	end
-
-	-- De lejos a cerca: lo mas cercano tapa lo mas lejano.
-	table.sort(cajas, function(a, b)
-		return a.profundidad > b.profundidad
-	end)
-
-	for _, caja in ipairs(cajas) do
-		local color = caja.parte.Color
-		local r, g, b = color.R, color.G, color.B
-		local material = caja.parte.Material
-		if material == Enum.Material.Neon or material == Enum.Material.Glass then
-			r = math.min(1, r * 1.35 + 0.15)
-			g = math.min(1, g * 1.35 + 0.15)
-			b = math.min(1, b * 1.35 + 0.15)
-		end
-		local alfa = math.clamp(1 - caja.parte.Transparency, 0, 1)
-		pintarCaja(caja.minimo, caja.maximo, Color3.new(r, g, b), alfa)
-	end
-
-	-- Luces: halo aditivo con su color, brillo y alcance reales.
+	-- Los halos y las líneas usan la posición real de Attachments, no la del Part padre.
 	for _, luz in ipairs(elementos.luces) do
-		local padre = luz.Parent
-		if padre and padre:IsA("BasePart") then
-			local minimo, maximo, profundidad = cajaDeParte(padre)
-			if minimo then
-				local escala = pixelesPorStud(profundidad)
-				local radio = math.max(3, (luz.Range or 8) * escala * 0.6)
-				local intensidad = math.clamp((luz.Brightness or 1) / 3, 0.08, 0.6)
-				brilloRadial((minimo + maximo) / 2, radio, luz.Color, intensidad)
+		if luz.Enabled then
+			local world = puntoVisual(luz)
+			local proy = world and proyectarPunto(world)
+			if proy then
+				local radio = math.clamp((luz.Range or 8) * pixelesPorStud(proy.z) * 0.45, 2, math.max(ancho, alto) * 0.45)
+				dibujos[#dibujos + 1] = {
+					kind = "halo", center = proy.punto, radius = radio,
+					color = luz.Color, alpha = math.clamp((luz.Brightness or 1) / 3, 0.08, 0.55), z = proy.z
+				}
 			end
 		end
 	end
-
-	-- Particulas: nube de halos con el color y el tamano reales del emisor.
 	for _, emisor in ipairs(elementos.emisores) do
-		local padre = emisor.Parent
-		if padre and padre:IsA("BasePart") then
-			local minimo, maximo, profundidad = cajaDeParte(padre)
-			if minimo then
-				local escala = pixelesPorStud(profundidad)
-				local color = colorPromedioDeSecuencia(emisor.Color)
-				local radio = math.max(2, tamanoPromedioDeSecuencia(emisor.Size) * escala * 0.5)
-				local brillo = math.clamp(emisor.LightEmission or 0, 0, 1)
-				local cantidad = math.clamp(math.floor((emisor.Rate or 20) / 4) + 6, 6, 40)
-				local centro = (minimo + maximo) / 2
-				local extension = math.max(maximo.X - centro.X, maximo.Y - centro.Y) + radio * 2
+		if emisor.Enabled and emisor.Rate > 0 then
+			local world = puntoVisual(emisor)
+			local proy = world and proyectarPunto(world)
+			if proy then
+				local escala = pixelesPorStud(proy.z)
+				local radio = math.clamp(tamanoPromedioDeSecuencia(emisor.Size) * escala * 0.3, 1.5, 15)
+				local velocidad = typeof(emisor.Speed) == "NumberRange" and (emisor.Speed.Min + emisor.Speed.Max) / 2 or 0
+				local vida = typeof(emisor.Lifetime) == "NumberRange" and (emisor.Lifetime.Min + emisor.Lifetime.Max) / 2 or 1
+				local extension = math.clamp(velocidad * vida * escala * 0.25, radio, math.max(ancho, alto) * 0.35)
+				local cantidad = math.clamp(math.floor(emisor.Rate / 5) + 3, 4, 18)
+				local color = promedioColor(emisor.Color)
+				local brillo = math.clamp(0.22 + (emisor.LightEmission or 0) * 0.35, 0.12, 0.6)
 				for i = 1, cantidad do
 					local angulo = i * 2.39996
 					local distancia = extension * math.sqrt(i / cantidad)
-					local px = centro.X + math.cos(angulo) * distancia
-					local py = centro.Y + math.sin(angulo) * distancia * 0.85
-					brilloRadial(Vector2.new(px, py), radio, color, 0.25 + 0.35 * brillo)
+					local center = proy.punto + Vector2.new(math.cos(angulo) * distancia, math.sin(angulo) * distancia * 0.85)
+					dibujos[#dibujos + 1] = {kind = "halo", center = center, radius = radio, color = color, alpha = brillo, z = proy.z}
 				end
 			end
+		end
+	end
+	for _, beam in ipairs(elementos.beams) do
+		if beam.Enabled and beam.Attachment0 and beam.Attachment1 then
+			local a = proyectarPunto(beam.Attachment0.WorldPosition)
+			local b = proyectarPunto(beam.Attachment1.WorldPosition)
+			if a and b then
+				local escala = pixelesPorStud((a.z + b.z) / 2)
+				local grosor = math.clamp(((beam.Width0 + beam.Width1) / 2) * escala * 0.5, 1, 24)
+				dibujos[#dibujos + 1] = {kind = "line", a = a.punto, b = b.punto, radius = grosor,
+					color = promedioColor(beam.Color), alpha = opacidad(beam.Transparency), z = (a.z + b.z) / 2}
+			end
+		end
+	end
+	for _, trail in ipairs(elementos.trails) do
+		if trail.Enabled and trail.Attachment0 and trail.Attachment1 then
+			local a = proyectarPunto(trail.Attachment0.WorldPosition)
+			local b = proyectarPunto(trail.Attachment1.WorldPosition)
+			if a and b then
+				local escala = pixelesPorStud((a.z + b.z) / 2)
+				local anchoMedio = promedioNumero(trail.WidthScale, 1)
+				local grosor = math.clamp(anchoMedio * escala * 0.5, 1, 24)
+				dibujos[#dibujos + 1] = {kind = "line", a = a.punto, b = b.punto, radius = grosor,
+					color = promedioColor(trail.Color), alpha = 0.65, z = (a.z + b.z) / 2}
+			end
+		end
+	end
+
+	-- Painter's algorithm: aproxima oclusión por profundidad, no por píxel.
+	table.sort(dibujos, function(a, b) return a.z > b.z end)
+	for _, dibujo in ipairs(dibujos) do
+		if dibujo.kind == "polygon" then
+			pintarPoligono(dibujo.points, dibujo.color, dibujo.alpha)
+		elseif dibujo.kind == "ellipse" then
+			pintarElipse(dibujo.center, dibujo.rx, dibujo.ry, dibujo.color, dibujo.alpha)
+		elseif dibujo.kind == "rect" then
+			pintarCaja(dibujo.min, dibujo.max, dibujo.color, dibujo.alpha)
+		elseif dibujo.kind == "line" then
+			pintarSegmento(dibujo.a, dibujo.b, dibujo.radius, dibujo.color, dibujo.alpha)
+		elseif dibujo.kind == "halo" then
+			brilloRadial(dibujo.center, dibujo.radius, dibujo.color, dibujo.alpha)
 		end
 	end
 
 	return ancho, alto, pixeles
 end
-
 local capturaEnCurso = false
 
 local function enviarCapturaVisual(detalles, alTerminar)
@@ -2364,7 +2656,8 @@ local function enviarCapturaVisual(detalles, alTerminar)
 				imageBase64 = base64,
 				resolution = {width = ancho, height = alto},
 				tipo = "proyeccion",
-				nota = "Proyeccion de la geometria real de la escena sobre el plano de la camara. No es una foto del render: no incluye iluminacion, sombras, texturas ni particulas simuladas."
+				sceneSummary = resumirElementosVFX(elementos),
+				nota = "Proyeccion sintetica aproximada, no captura del render de Studio. Las texturas se representan solo como caras tintadas; iluminacion, sombras, mallas y particulas simuladas no se rasterizan fielmente. Usa sceneSummary para interpretar clases y propiedades reales."
 			})
 		})
 	end)
