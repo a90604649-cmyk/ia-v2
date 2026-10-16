@@ -15,6 +15,7 @@ local TEST_RESULTS_URL = BASE_URL .. "/test-results"
 local EXECUTION_RESULTS_URL = BASE_URL .. "/execution-results"
 local TEXTURE_CATALOG_URL = BASE_URL .. "/texture-catalog"
 local TEXTURE_VALIDATION_URL = BASE_URL .. "/texture-validation"
+local MODEL_VALIDATION_URL = BASE_URL .. "/model-validation"
 local VISUAL_CAPTURE_URL = BASE_URL .. "/visual-capture"
 
 local INTERVALO_ESCANEO = 300
@@ -96,6 +97,7 @@ local VFX_ACTION_TYPES = {
 	move_instance = true,
 	delete_instance = true,
 	verify_textures = true,
+	verify_models = true,
 	insertar_modelo = true
 }
 
@@ -1332,6 +1334,76 @@ local function cargarModeloCatalogo(assetId)
 	return nil
 end
 
+-- Verifica que los candidatos pueden cargarse en Studio y contienen geometría/instancias visuales.
+-- Los assets solo se cargan para inspección y se destruyen sin insertarlos en el proyecto.
+local function ejecutarVerificacionModelos(action)
+	local entradas = action.models
+	if type(entradas) ~= "table" then
+		warn("[Roblox AI] verify_models sin lista de modelos.")
+		return false
+	end
+
+	local resultados = {}
+	for indice, entrada in ipairs(entradas) do
+		if indice > 6 then break end
+		local id = type(entrada) == "table" and tostring(entrada.id or "") or tostring(entrada)
+		local nombre = type(entrada) == "table" and tostring(entrada.nombre or "") or ""
+		local validado, partes, emisores = false, 0, 0
+		if string.match(id, "^%d+$") then
+			local modelo = cargarModeloCatalogo(tonumber(id))
+			if modelo then
+				local inseguro = false
+				local function inspeccionar(instancia)
+					if instancia:IsA("Script") or instancia:IsA("LocalScript") or instancia:IsA("ModuleScript")
+						or instancia:IsA("RemoteEvent") or instancia:IsA("RemoteFunction") then
+						inseguro = true
+					elseif instancia:IsA("BasePart") then
+						partes += 1
+					elseif instancia:IsA("ParticleEmitter") or instancia:IsA("Beam") or instancia:IsA("Trail")
+						or instancia:IsA("Light") or instancia:IsA("Decal") or instancia:IsA("Texture") then
+						emisores += 1
+					end
+				end
+				inspeccionar(modelo)
+				for _, descendiente in ipairs(modelo:GetDescendants()) do
+					inspeccionar(descendiente)
+				end
+				validado = not inseguro and (partes > 0 or emisores > 0)
+				modelo:Destroy()
+			end
+		end
+		table.insert(resultados, {
+			id = id,
+			nombre = nombre,
+			validado = validado,
+			partes = partes,
+			emisores = emisores
+		})
+	end
+
+	local ok, response = pcall(function()
+		return HttpService:RequestAsync({
+			Url = MODEL_VALIDATION_URL,
+			Method = "POST",
+			Headers = {
+				["Content-Type"] = "application/json",
+				["Accept"] = "application/json"
+			},
+			Body = HttpService:JSONEncode({
+				requestId = tostring(action.requestId or action.request_id or ""),
+				results = resultados,
+				total = #resultados
+			})
+		})
+	end)
+	if not ok or not response.Success then
+		warn("[Roblox AI] No se pudo informar la validación de modelos:", ok and response.Body or response)
+		return false
+	end
+	print("[Roblox AI] Modelos del catálogo comprobados en Studio:", #resultados)
+	return true
+end
+
 --[[
 	* Inserta un modelo del catálogo público de Roblox. El assetId lo decide el
 	* bridge (viene de la búsqueda), nunca el modelo de IA.
@@ -1422,6 +1494,10 @@ local function ejecutarExtendedAction(action)
 
 	if tipo == "verify_textures" then
 		return ejecutarVerificacionTexturas(action)
+	end
+
+	if tipo == "verify_models" then
+		return ejecutarVerificacionModelos(action)
 	end
 
 	if tipo == "insertar_modelo" then
@@ -2079,6 +2155,15 @@ local function encuadrarEfecto(detalles)
 				for _, descendiente in ipairs(objetivo:GetDescendants()) do
 					incluir(descendiente)
 				end
+				-- Un emisor puede ser la única acción: incluye su Attachment/BasePart padre
+				-- para encuadrar el origen real sin recorrer el Workspace completo.
+				local ancestro = objetivo.Parent
+				while ancestro and ancestro ~= workspace do
+					if ancestro:IsA("BasePart") or ancestro:IsA("Attachment") then
+						incluir(ancestro)
+					end
+					ancestro = ancestro.Parent
+				end
 			end
 		end
 	end
@@ -2149,10 +2234,12 @@ end
 
 -- Reune la geometria real afectada por la ultima tanda de acciones.
 local function recolectarElementosVFX(detalles)
-	local vistos = {}
+	local visitados, registrados = {}, {}
 	local partes, emisores, luces, beams, trails, attachments, superficies = {}, {}, {}, {}, {}, {}, {}
 
 	local function registrar(instancia)
+		if not instancia or registrados[instancia] then return end
+		registrados[instancia] = true
 		if instancia:IsA("BasePart") then
 			table.insert(partes, instancia)
 		elseif instancia:IsA("ParticleEmitter") then
@@ -2171,16 +2258,20 @@ local function recolectarElementosVFX(detalles)
 	end
 
 	local function visitar(instancia)
-		if not instancia or vistos[instancia] then
-			return
-		end
-		vistos[instancia] = true
+		if not instancia or visitados[instancia] then return end
+		visitados[instancia] = true
 		registrar(instancia)
-		for _, hijo in ipairs(instancia:GetDescendants()) do
-			if not vistos[hijo] then
-				vistos[hijo] = true
-				registrar(hijo)
+		-- Registrar solamente ancestros físicos directos de un emisor/attachment;
+		-- no descender desde ellos, porque eso volvería a incluir la escena completa.
+		local ancestro = instancia.Parent
+		while ancestro and ancestro ~= workspace do
+			if ancestro:IsA("BasePart") or ancestro:IsA("Attachment") then
+				registrar(ancestro)
 			end
+			ancestro = ancestro.Parent
+		end
+		for _, hijo in ipairs(instancia:GetDescendants()) do
+			registrar(hijo)
 		end
 	end
 
@@ -2498,7 +2589,7 @@ local function proyectarEscena(elementos, anchoObjetivo)
 		if #puntosValidos == 8 then
 			for _, superficie in ipairs(parte:GetChildren()) do
 				if superficie:IsA("Decal") or superficie:IsA("Texture") then
-					local indices = caraPorNombre[tostring(superficie.Face)]
+					local indices = caraPorNombre[superficie.Face.Name]
 					local uri = tostring(superficie.Texture or "")
 					if indices and uri ~= "" then
 						local puntos, sumaZ = {}, 0
