@@ -2997,9 +2997,20 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 																		);
 
 																		if (action && !esAccionPermitidaVFX(action, options.mensajeUsuario)) {
-																			console.warn("⚠️ Acción rechazada: esta rama solo permite acciones visuales de VFX.");
-																			continue;
-																			}
+														console.warn(
+															"⚠️ Acción rechazada por la política VFX; detalle:",
+															JSON.stringify({
+																type: action.type,
+																className: action.className || "",
+																path: action.path || "",
+																name: action.name || "",
+																property: action.property || "",
+																properties: action.properties ? Object.keys(action.properties) : [],
+																targetPath: action.targetPath || ""
+																}, null, 2)
+														);
+														continue;
+													}
 
 																			if (action) {
 																				actions.push(
