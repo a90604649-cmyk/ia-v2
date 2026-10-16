@@ -142,10 +142,15 @@ function normalizeObject(object) {
         return null;
     }
 
+    const estructura = String(
+        object.estructura || ""
+    ).trim().slice(0, 420);
+
     return {
         className,
         name,
-        path
+        path,
+        estructura
     };
 }
 
@@ -411,6 +416,12 @@ function scoreObject(
     const pathLower =
         object.path.toLowerCase();
 
+    const estructura =
+        String(object.estructura || "").toLowerCase();
+
+    const estructuraTokens =
+        tokenize(estructura);
+
     let score = 0;
 
     const signals = [];
@@ -456,6 +467,14 @@ function scoreObject(
             signals.push(
                 `ruta-parcial:${term}`
             );
+        }
+
+        if (estructuraTokens.includes(term)) {
+            score += 15;
+            signals.push(`estructura:${term}`);
+        } else if (estructura.includes(term)) {
+            score += 8;
+            signals.push(`estructura-parcial:${term}`);
         }
     }
 
@@ -506,7 +525,10 @@ function buildObjects() {
                 object.name,
 
             path:
-                object.path
+                object.path,
+
+            estructura:
+                object.estructura || ""
         }))
         .sort((a, b) =>
             `${a.path}/${a.name}`.localeCompare(
@@ -809,6 +831,10 @@ function selectRelevantScripts(
                     path:
                         item.object
                             .path,
+
+                    estructura:
+                        item.object
+                            .estructura || "",
 
                     score:
                         item.score,
