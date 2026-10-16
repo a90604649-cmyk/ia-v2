@@ -1798,7 +1798,7 @@ local function obtenerResumenAccion(action)
 	local summary = {
 		type = tostring(action.type or action.action or "unknown"),
 		path = tostring(action.path or ""),
-		name = tostring(action.name or ""),
+		name = tostring(action.name or action.nombre or ""),
 		ok = false
 	}
 	local marker = "__ROBLOX_AI_EXTENDED_ACTION__"
