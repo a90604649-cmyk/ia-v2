@@ -21,6 +21,7 @@ jobs:
       - name: Check JavaScript syntax
         run: |
           node --check ia/server.js
+          node --check ia/diagnostics.js
           node --check ia/omniRoute.js
           node --check ia/start.js
           node --check ia/projectContextServer.js
