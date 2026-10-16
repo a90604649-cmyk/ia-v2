@@ -1318,18 +1318,21 @@ local function cargarModeloCatalogo(assetId)
 
 	if type(game.GetObjects) == "function" then
 		table.insert(intentos, function()
-			local objetos = game:GetObjects(assetId)
+			local objetos = game:GetObjects("rbxassetid://" .. tostring(assetId))
 			return objetos and objetos[1] or nil
 		end)
 	end
 
+	local ultimoError = "sin detalle"
 	for _, intento in ipairs(intentos) do
 		local ok, resultado = pcall(intento)
 		if ok and resultado then
 			return resultado
 		end
+		ultimoError = tostring(resultado)
 	end
 
+	warn("[Roblox AI] No se pudo cargar el modelo del catálogo. Para assets públicos de terceros, comprueba Studio > Experience Settings > Security > Allow Loading Third Party Assets. No se marcará como válido sin cargarlo. Detalle:", ultimoError)
 	return nil
 end
 
