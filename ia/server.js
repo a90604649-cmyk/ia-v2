@@ -1156,7 +1156,7 @@ async function obtenerMiniaturaCatalogo(assetId) {
 	}
 }
 
-async function rankearCandidatosVisualmente(candidatos, tipo = "textura") {
+async function rankearCandidatosVisualmente(candidatos, tipo = "textura", keyword = "") {
 	if (!Array.isArray(candidatos) || candidatos.length < 2) return candidatos || [];
 	const referencia = referenciaVisualActual;
 	if (!referencia || !String(process.env.NVIDIA_API_KEY || "").trim()) {
@@ -1181,8 +1181,8 @@ async function rankearCandidatosVisualmente(candidatos, tipo = "textura") {
 			type: "text",
 			text: [
 				"IMAGEN OBJETIVO: la primera imagen es el VFX de referencia del usuario.",
-				`CANDIDATOS: las imágenes siguientes son miniaturas de ${tipo === "modelo" ? "modelos" : "texturas/decal"} del catálogo público de Roblox.`,
-				"Ordena los candidatos por semejanza VISUAL con la referencia: silueta, forma, composición y color. No elijas solo por el nombre. El thumbnail puede ser una vista previa aproximada, no una captura completa del asset.",
+				`CANDIDATOS: las imágenes siguientes son miniaturas de ${tipo === "modelo" ? "modelos" : "texturas/decal"} del catálogo público de Roblox. Búsqueda solicitada: "${keyword}".`,
+				"Ordena por semejanza VISUAL con la referencia y relevancia para la característica buscada: silueta, forma, composición y color. Para texturas, compara principalmente la forma/elemento objetivo descrito por la palabra clave, no la imagen completa como una sola composición. No elijas solo por el nombre. El thumbnail puede ser una vista previa aproximada, no una captura completa del asset.",
 				"Devuelve exclusivamente JSON con este formato: {\"ranking\":[{\"id\":\"ID_NUMERICO\",\"score\":0}]}. Incluye solo IDs mostrados; score de 0 a 100."
 			].join("\n")
 		},
@@ -1225,17 +1225,24 @@ async function rankearCandidatosVisualmente(candidatos, tipo = "textura") {
 		const ordenados = [];
 		const usados = new Set();
 		const ranking = Array.isArray(parsed.ranking) ? parsed.ranking : [];
+		const puntuaciones = new Map();
 		ranking
-			.filter((entry) => entry && byId.has(String(entry.id)))
+			.filter((entry) => entry && byId.has(String(entry.id)) && Number.isFinite(Number(entry.score)))
 			.sort((a, b) => Number(b.score || 0) - Number(a.score || 0))
 			.forEach((entry) => {
 				const id = String(entry.id);
+				puntuaciones.set(id, Math.max(0, Math.min(100, Number(entry.score))));
 				if (!usados.has(id)) {
 					usados.add(id);
 					ordenados.push(byId.get(id));
 				}
 			});
 		if (!ordenados.length) return candidatos;
+		const mejorPuntuacion = puntuaciones.get(String(ordenados[0].id));
+		if (tipo === "modelo" && Number.isFinite(mejorPuntuacion) && mejorPuntuacion < 35) {
+			console.warn(`[RobloxAI] Ninguna miniatura de modelo pareció suficientemente similar a la referencia (mejor puntuación ${mejorPuntuacion}/100); no se insertará un modelo potencialmente irrelevante.`);
+			return [];
+		}
 		for (const item of candidatos) {
 			const id = String(item.id);
 			if (!usados.has(id)) ordenados.push(item);
@@ -1285,7 +1292,7 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 																							return null;
 																							}
 
-																							const ordenadas = await rankearCandidatosVisualmente(validadas, tipo);
+																							const ordenadas = await rankearCandidatosVisualmente(validadas, tipo, clave);
 																							const entrada = {
 																								keyword: clave, tipo,
 																								at: Date.now(),
