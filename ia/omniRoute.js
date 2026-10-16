@@ -1,4 +1,6 @@
 ﻿import "dotenv/config";
+import { logError, suppressRoutineLogs } from "./diagnostics.js";
+suppressRoutineLogs();
 
 const OMNIROUTE_URL = String(
 	process.env.OMNIROUTE_URL ||
@@ -460,34 +462,32 @@ function limpiarMarkdownJson(texto) {
 
 	export function parsearRespuestaJson(texto) {
 		const limpio = limpiarMarkdownJson(texto);
-
 		let objeto = null;
 
 		try {
 			objeto = JSON.parse(limpio);
-		} catch {
+		} catch (primerError) {
 			const inicio = limpio.indexOf("{");
 			const fin = limpio.lastIndexOf("}");
-
-			if (
-				inicio === -1 ||
-				fin <= inicio
-				) {
-					return null;
-				}
-
-				try {
-					objeto = JSON.parse(
-						limpio.slice(
-							inicio,
-							fin + 1
-						)
-					);
-				} catch {
-					return null;
-				}
+			if (inicio === -1 || fin <= inicio) {
+				logError("OmniRoute", "response.json_not_found", primerError, {
+					responseLength: limpio.length,
+					hasOpeningBrace: inicio !== -1,
+					hasClosingBrace: fin > inicio
+				});
+				return null;
+			}
+			try {
+				objeto = JSON.parse(limpio.slice(inicio, fin + 1));
+			} catch (error) {
+				logError("OmniRoute", "response.json_parse_failed", error, {
+					responseLength: limpio.length,
+					hasOpeningBrace: true,
+					hasClosingBrace: true
+				});
+				return null;
+			}
 		}
-
 		return adaptarAccionesExtendidas(objeto);
 		}
 
@@ -803,7 +803,12 @@ function limpiarMarkdownJson(texto) {
 																	continue;
 															}
 
-															throw lastError;
+															logError("OmniRoute", "request.attempt_failed", lastError, {
+										attempt,
+										attempts,
+										model: OMNIROUTE_MODEL
+									});
+									throw lastError;
 													}
 												}
 
