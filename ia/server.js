@@ -1219,14 +1219,14 @@ async function rankearCandidatosVisualmente(candidatos, tipo = "textura", keywor
 
 	let respuesta;
 	try {
-		respuesta = await preguntarNvidiaVision(mensajes);
+		respuesta = await preguntarNvidiaVisionConReintento(mensajes);
 	} catch (primaryError) {
 		if (!NVIDIA_VISION_FALLBACK_MODEL || NVIDIA_VISION_FALLBACK_MODEL === NVIDIA_VISION_MODEL) {
 			console.warn("[RobloxAI] Ranking visual falló.", primaryError instanceof Error ? primaryError.message : String(primaryError));
 			return tipo === "modelo" ? [] : candidatos;
 		}
 		try {
-			respuesta = await preguntarNvidiaVision(mensajes, NVIDIA_VISION_FALLBACK_MODEL);
+			respuesta = await preguntarNvidiaVisionConReintento(mensajes, NVIDIA_VISION_FALLBACK_MODEL);
 		} catch (fallbackError) {
 			console.warn("[RobloxAI] Ranking visual y respaldo fallaron.", fallbackError instanceof Error ? fallbackError.message : String(fallbackError));
 			return tipo === "modelo" ? [] : candidatos;
@@ -3219,6 +3219,32 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 						}
 						}
 
+					async function preguntarNvidiaVisionConReintento(messages, model = NVIDIA_VISION_MODEL) {
+						try {
+							return await preguntarNvidiaVision(messages, model);
+						} catch (firstError) {
+							const firstMessage = String(firstError?.message || firstError);
+							const capacityError = /ResourceExhausted|Worker local total request limit reached|all workers are busy/i.test(firstMessage);
+							if (!capacityError) throw firstError;
+
+							const retryDelayMs = 2500;
+							console.warn(
+								`[RobloxAI] El proveedor visual alcanzó su límite de capacidad (${model}); se hará un único reintento en ${retryDelayMs} ms.`
+							);
+							await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+
+							try {
+								return await preguntarNvidiaVision(messages, model);
+							} catch (retryError) {
+								console.error(
+									"[RobloxAI] El reintento del proveedor visual también falló.",
+									retryError instanceof Error ? retryError : new Error(String(retryError))
+								);
+								throw retryError;
+							}
+						}
+					}
+
 					async function analizarReferenciaVisual(messages) {
 						if (visualAnalysisCache.has(messages)) {
 							return visualAnalysisCache.get(messages);
@@ -3274,7 +3300,7 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 
 								let analysis;
 								try {
-									analysis = await preguntarNvidiaVision(visualMessages, NVIDIA_VISION_MODEL);
+									analysis = await preguntarNvidiaVisionConReintento(visualMessages, NVIDIA_VISION_MODEL);
 								} catch (primaryError) {
 									const primaryMessage = String(primaryError?.message || primaryError);
 									const isEndpointDegraded =
@@ -3291,7 +3317,7 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 												`[RobloxAI] Modelo visual principal no disponible; probando alternativa ${NVIDIA_VISION_FALLBACK_MODEL}...`
 											);
 											try {
-												analysis = await preguntarNvidiaVision(visualMessages, NVIDIA_VISION_FALLBACK_MODEL);
+												analysis = await preguntarNvidiaVisionConReintento(visualMessages, NVIDIA_VISION_FALLBACK_MODEL);
 											} catch (fallbackError) {
 												throw new Error(
 													`Fallaron ambos modelos visuales. Principal: ${primaryMessage}. Alternativa: ${String(fallbackError?.message || fallbackError)}`
@@ -4144,7 +4170,7 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 
 	let comparacion;
 	try {
-		comparacion = await preguntarNvidiaVision(comparacionMensajes);
+		comparacion = await preguntarNvidiaVisionConReintento(comparacionMensajes);
 	} catch (primaryError) {
 		if (!NVIDIA_VISION_FALLBACK_MODEL || NVIDIA_VISION_FALLBACK_MODEL === NVIDIA_VISION_MODEL) {
 			console.warn("[RobloxAI] Revisión omitida: el modelo visual principal falló.", primaryError instanceof Error ? primaryError.message : String(primaryError));
@@ -4152,7 +4178,7 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 		}
 		try {
 			console.warn(`[RobloxAI] El modelo visual principal falló; probando alternativa ${NVIDIA_VISION_FALLBACK_MODEL}...`);
-			comparacion = await preguntarNvidiaVision(comparacionMensajes, NVIDIA_VISION_FALLBACK_MODEL);
+			comparacion = await preguntarNvidiaVisionConReintento(comparacionMensajes, NVIDIA_VISION_FALLBACK_MODEL);
 		} catch (fallbackError) {
 			console.warn("[RobloxAI] Revisión omitida: ambos modelos visuales fallaron.", fallbackError instanceof Error ? fallbackError.message : String(fallbackError));
 			return;
