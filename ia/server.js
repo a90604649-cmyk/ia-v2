@@ -1136,6 +1136,118 @@ async function verificarModelosEnStudio(candidatos) {
 		}));
 }
 
+async function obtenerMiniaturaCatalogo(assetId) {
+	try {
+		const metadata = await pedirJson(
+			`https://thumbnails.roblox.com/v1/assets?assetIds=${encodeURIComponent(String(assetId))}&size=420x420&format=Png&isCircular=false`,
+			8000
+		);
+		const item = Array.isArray(metadata?.data) ? metadata.data.find((x) => String(x?.targetId) === String(assetId)) : null;
+		if (!item || item.state !== "Completed" || typeof item.imageUrl !== "string") return null;
+		const response = await fetch(item.imageUrl, { signal: AbortSignal.timeout(8000) });
+		if (!response.ok) return null;
+		const mime = String(response.headers.get("content-type") || "image/png").split(";")[0];
+		if (!/^image\/(png|jpeg|webp)$/i.test(mime)) return null;
+		const bytes = Buffer.from(await response.arrayBuffer());
+		if (!bytes.length || bytes.length > 1200000) return null;
+		return { dataUrl: `data:${mime};base64,${bytes.toString("base64")}` };
+	} catch {
+		return null;
+	}
+}
+
+async function rankearCandidatosVisualmente(candidatos, tipo = "textura") {
+	if (!Array.isArray(candidatos) || candidatos.length < 2) return candidatos || [];
+	const referencia = referenciaVisualActual;
+	if (!referencia || !String(process.env.NVIDIA_API_KEY || "").trim()) {
+		console.log("[RobloxAI] Ranking visual de catálogo omitido: falta imagen de referencia o NVIDIA_API_KEY; se conserva el orden del catálogo.");
+		return candidatos;
+	}
+
+	// Limita las miniaturas para no saturar memoria/red ni el contexto multimodal.
+	const candidatosCortos = candidatos.slice(0, 4);
+	const miniaturas = await Promise.all(candidatosCortos.map(async (item) => ({
+		item,
+		miniatura: await obtenerMiniaturaCatalogo(item.id)
+	})));
+	const disponibles = miniaturas.filter((x) => x.miniatura);
+	if (disponibles.length < 2) {
+		console.warn("[RobloxAI] No hubo suficientes miniaturas del catálogo; se conserva el orden de búsqueda.");
+		return candidatos;
+	}
+
+	const contenido = [
+		{
+			type: "text",
+			text: [
+				"IMAGEN OBJETIVO: la primera imagen es el VFX de referencia del usuario.",
+				`CANDIDATOS: las imágenes siguientes son miniaturas de ${tipo === "modelo" ? "modelos" : "texturas/decal"} del catálogo público de Roblox.`,
+				"Ordena los candidatos por semejanza VISUAL con la referencia: silueta, forma, composición y color. No elijas solo por el nombre. El thumbnail puede ser una vista previa aproximada, no una captura completa del asset.",
+				"Devuelve exclusivamente JSON con este formato: {\"ranking\":[{\"id\":\"ID_NUMERICO\",\"score\":0}]}. Incluye solo IDs mostrados; score de 0 a 100."
+			].join("\n")
+		},
+		{ type: "image_url", image_url: { url: referencia } }
+	];
+	for (const candidato of disponibles) {
+		contenido.push({
+			type: "text",
+			text: `Candidato ID=${String(candidato.item.id)}; nombre=${String(candidato.item.nombre || "(sin nombre)")}; tipo=${tipo}.`
+		});
+		contenido.push({ type: "image_url", image_url: { url: candidato.miniatura.dataUrl } });
+	}
+	const mensajes = [
+		{ role: "system", content: "Eres un ranker de recuperación visual de assets. Compara imágenes reales de miniaturas con la imagen objetivo. No inventes IDs. Salida JSON estricta." },
+		{ role: "user", content: contenido }
+	];
+
+	let respuesta;
+	try {
+		respuesta = await preguntarNvidiaVision(mensajes);
+	} catch (primaryError) {
+		if (!NVIDIA_VISION_FALLBACK_MODEL || NVIDIA_VISION_FALLBACK_MODEL === NVIDIA_VISION_MODEL) {
+			console.warn("[RobloxAI] Ranking visual falló; se conserva el orden del catálogo.", primaryError instanceof Error ? primaryError.message : String(primaryError));
+			return candidatos;
+		}
+		try {
+			respuesta = await preguntarNvidiaVision(mensajes, NVIDIA_VISION_FALLBACK_MODEL);
+		} catch (fallbackError) {
+			console.warn("[RobloxAI] Ranking visual y respaldo fallaron; se conserva el orden del catálogo.", fallbackError instanceof Error ? fallbackError.message : String(fallbackError));
+			return candidatos;
+		}
+	}
+
+	try {
+		const limpio = String(respuesta || "").trim().replace(/^\uFEFF/, "").replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "");
+		const json = limpio.match(/\{[\s\S]*\}/);
+		if (!json) return candidatos;
+		const parsed = JSON.parse(json[0]);
+		const byId = new Map(candidatos.map((item) => [String(item.id), item]));
+		const ordenados = [];
+		const usados = new Set();
+		const ranking = Array.isArray(parsed.ranking) ? parsed.ranking : [];
+		ranking
+			.filter((entry) => entry && byId.has(String(entry.id)))
+			.sort((a, b) => Number(b.score || 0) - Number(a.score || 0))
+			.forEach((entry) => {
+				const id = String(entry.id);
+				if (!usados.has(id)) {
+					usados.add(id);
+					ordenados.push(byId.get(id));
+				}
+			});
+		if (!ordenados.length) return candidatos;
+		for (const item of candidatos) {
+			const id = String(item.id);
+			if (!usados.has(id)) ordenados.push(item);
+		}
+		console.log(`[RobloxAI] Ranking visual del catálogo completado: mejor candidato ID ${ordenados[0].id} (${ordenados[0].nombre || "sin nombre"}).`);
+		return ordenados;
+	} catch (error) {
+		console.warn("[RobloxAI] La respuesta del ranking visual no era JSON válido; se conserva el orden del catálogo.", error instanceof Error ? error.message : String(error));
+		return candidatos;
+	}
+}
+
 async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 																		const clave = claveBusqueda(keyword);
 
@@ -1173,10 +1285,11 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 																							return null;
 																							}
 
+																							const ordenadas = await rankearCandidatosVisualmente(validadas, tipo);
 																							const entrada = {
 																								keyword: clave, tipo,
 																								at: Date.now(),
-																								textures: validadas.slice(0, 10)
+																								textures: ordenadas.slice(0, 10)
 																							};
 
 																							cacheTexturas.searches = [
@@ -3125,7 +3238,7 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 									content: [
 									{
 										type: "text",
-										text: "Analiza esta referencia para replicar su estilo visual en un VFX editable de Roblox Studio. Describe los rasgos visuales utiles y termina con el bloque FORMA / PLANO / PALETA / GEOMETRIA / PARTICULAS, porque ese bloque decide la geometria que se va a construir en el suelo."
+										text: "Analiza esta referencia para replicar su estilo visual en un VFX editable de Roblox Studio. Describe los rasgos visuales útiles y termina con el bloque FORMA / PLANO / PALETA / GEOMETRÍA / PARTICULAS, porque decide orientación, forma, posición y capas según la imagen. No presupongas que el efecto está en el suelo ni que flota si la referencia no lo indica."
 									},
 									imagePart
 									]
