@@ -26,16 +26,16 @@ local function warnConDiagnostico(...)
 	end)
 	if okTraza and type(resultadoTraza) == "string" then
 		local lineas = {}
-		for linea in string.gmatch(resultadoTraza, "[^\\n]+") do
+		for linea in string.gmatch(resultadoTraza, "[^\n]+") do
 			table.insert(lineas, linea)
 			if #lineas >= 6 then
 				break
 			end
 		end
-		traza = table.concat(lineas, "\\n")
+		traza = table.concat(lineas, "\n")
 	end
 
-	warnOriginal("[Roblox AI][DIAGNOSTIC_WARN] " .. table.concat(partes, " ") .. (traza ~= "" and ("\\n" .. traza) or ""))
+	warnOriginal("[Roblox AI][DIAGNOSTIC_WARN] " .. table.concat(partes, " ") .. (traza ~= "" and ("\n" .. traza) or ""))
 end
 
 local warn = warnConDiagnostico
