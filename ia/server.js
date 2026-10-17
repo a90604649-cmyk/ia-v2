@@ -210,6 +210,11 @@ const EXTENDED_MARKER =
 "No confundas cantidad de objetos con calidad. Prefiere pocas capas bien configuradas antes que muchas capas redundantes.",
 "Cuando la petición incluya animación, especifica fases y movimiento de forma honesta. Crear instancias en modo edición no significa que una animación esté ejecutándose ni que se haya visto.",
 "",
+"VFX SIN REFERENCIA Y PLAN DE RESPALDO:",
+"Cuando el usuario describe un efecto solo con texto y no adjunta una imagen, prioriza construirlo directamente con Parts, Attachments, ParticleEmitters, Beams, Trails y luces nativas de Roblox. No emitas buscar_texturas solo porque una textura podría mejorar el resultado; busca en el catálogo únicamente si el usuario pide usar un recurso del catálogo o si el elemento visual imprescindible no puede representarse razonablemente con instancias nativas.",
+"Si una búsqueda de recursos devuelve cero resultados, no canceles el trabajo, no repitas la búsqueda y no afirmes que el efecto está creado. Continúa con un diseño alternativo usando geometría y propiedades nativas. Nunca inventes asset IDs.",
+"Para sangre estilizada de videojuego, construye una composición deliberada de salpicaduras, gotas y chorreaduras con Parts rojas de distintos tamaños y orientaciones; usa ParticleEmitter tintado con textura interna documentada solo si está disponible y sirve al diseño. No dependas de encontrar una textura externa.",
+"",
 "FLUJO DE TRABAJO:",
 "1 Interpreta el efecto pedido y planifica sus capas",
 "2 Revisa el contexto real del proyecto y reutiliza solo objetos relevantes que existan de verdad",
@@ -259,7 +264,7 @@ const EXTENDED_MARKER =
 "3) Cualquier assetId que el usuario te indique.",
 "4) Ultimo recurso, las internas del motor: rbxasset://textures/particles/fire_maindds (fuego), smoke_maindds (humo), sparkles_maindds (chispas).",
 "El bridge comprueba cada textura de verdad y RECHAZA la accion si el asset no existe, asi que no intentes colarla",
-"Si necesitas buscar texturas, usa buscar_texturas como PRIMERA accion de la respuesta, sin acciones de instancia en el mismo JSON. No inventes nunca el resultado de una busqueda: si no recibes el catalogo verificado, dilo.",
+"Usa buscar_texturas como primera acción solo cuando el recurso externo sea realmente necesario según las reglas anteriores; no lo uses como paso predeterminado para efectos construibles con instancias nativas. Si buscas, no inventes resultados ni IDs.",
 "",
 "BUSQUEDA Y REUTILIZACION PARA UNA IMAGEN DE REFERENCIA:",
 "Antes de crear un VFX entero desde cero, examina la estructura visual real de los recursos existentes que aparecen en el contexto. Reutiliza un recurso solo si su geometría, propiedades y jerarquía pueden adaptarse a la silueta de la referencia; no confíes únicamente en el nombre.",
@@ -4209,6 +4214,7 @@ function normalizarAccion(
 														"Usa SOLO los ids listados arriba o los del CATÁLOGO DE TEXTURAS VERIFICADAS del contexto.",
 														"No inventes ningún id de textura.",
 														"No vuelvas a emitir acciones buscar_texturas.",
+														"Si la búsqueda está vacía, continúa creando el efecto con geometría y objetos nativos de Roblox; no canceles el VFX ni dependas de otra búsqueda. No inventes asset IDs.",
 														"Devuelve solamente JSON."
 														].join("\n")
 													);
