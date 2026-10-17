@@ -2347,33 +2347,10 @@ function normalizarAccion(
 													const envelopePayload = rawAction[envelopeKeys[0]];
 													const knownEnvelopeType = STANDARD_ACTIONS.has(envelopeKey)
 														|| EXTENDED_ACTIONS.has(envelopeKey)
-														|| ["buscar_texturas", "insertar_modelo", "verify_textures", "verify_models"].includes(envel								// Admite rutas completas y el campo "parent" separado usado por algunos modelos.
-								if (type === "create_instance") {
-									const normalizeRoute = (value) => {
-									let route = String(value || "").trim().replaceAll("\\", "/");
-									const root = BASES.find((base) => route.startsWith(base + "."));
-									if (root) route = root + "/" + route.slice(root.length + 1).split(".").join("/");
-									return route;
-								};
-								const fullPath = normalizeRoute(path || rawAction.target || "");
-								const tailName = fullPath.split("/").filter(Boolean).at(-1) || "";
-								const actionLikeName = EXTENDED_ACTIONS.has(name.toLowerCase()) || ["create","instance"].includes(name.toLowerCase());
-								if (typeof rawAction.parent === "string" && rutaValida(normalizeRoute(rawAction.parent))) {
-									path = normalizeRoute(rawAction.parent);
-									if (!name || actionLikeName) name = String(rawAction.targetName || tailName).trim();
-								} else if (fullPath && (actionLikeName || fullPath.endsWith("/" + name) || (rawAction.parent === null && tailName === name))) {
-									const separated = separarTarget(fullPath);
-									if (separated.path && separated.name && rutaValida(separated.path)) {
-										path = separated.path;
-										if (actionLikeName || !name) name = separated.name;
-									}
-								} else if (fullPath) {
-									path = fullPath;
-								}
-								}
-opeKey);
+														|| ["buscar_texturas", "insertar_modelo", "verify_textures", "verify_models"].includes(envelopeKey);
 													if (knownEnvelopeType && envelopePayload && typeof envelopePayload === "object" && !Array.isArray(envelopePayload)) {
 														rawAction = { ...envelopePayload, type: envelopeKey };
+													}
 													}
 											}
 										}
@@ -2566,7 +2543,31 @@ opeKey);
 													typeAliases[type];
 													}
 
-													/*
+																					// Admite rutas completas y el campo "parent" separado usado por algunos modelos.
+								if (type === "create_instance") {
+									const normalizeRoute = (value) => {
+									let route = String(value || "").trim().replaceAll("\\", "/");
+									const root = BASES.find((base) => route.startsWith(base + "."));
+									if (root) route = root + "/" + route.slice(root.length + 1).split(".").join("/");
+									return route;
+								};
+								const fullPath = normalizeRoute(path || rawAction.target || "");
+								const tailName = fullPath.split("/").filter(Boolean).at(-1) || "";
+								const actionLikeName = EXTENDED_ACTIONS.has(name.toLowerCase()) || ["create","instance"].includes(name.toLowerCase());
+								if (typeof rawAction.parent === "string" && rutaValida(normalizeRoute(rawAction.parent))) {
+									path = normalizeRoute(rawAction.parent);
+									if (!name || actionLikeName) name = String(rawAction.targetName || tailName).trim();
+								} else if (fullPath && (actionLikeName || fullPath.endsWith("/" + name) || (rawAction.parent === null && tailName === name))) {
+									const separated = separarTarget(fullPath);
+									if (separated.path && separated.name && rutaValida(separated.path)) {
+										path = separated.path;
+										if (actionLikeName || !name) name = separated.name;
+									}
+								} else if (fullPath) {
+									path = fullPath;
+								}
+								}
+/*
 													* ACCIÓN ESPECIAL: búsqueda de texturas en el catálogo
 													* público de Roblox. La resuelve el bridge, nunca el plugin.
 													*/
