@@ -2338,22 +2338,21 @@ function normalizarAccion(
 
 											// Compatibilidad con respuestas que envuelven cada acción por su nombre:
 											// {"create_instance": {...}} en lugar de {"type":"create_instance", ...}.
-											const hasActionType = ["type", "operation", "action", "actionType", "action_type", "command"]
-												.some((field) => typeof rawAction[field] === "string" && rawAction[field].trim() !== "");
-											if (!hasActionType) {
-												const envelopeKeys = Object.keys(rawAction);
-												if (envelopeKeys.length === 1) {
-													const envelopeKey = envelopeKeys[0].trim().toLowerCase();
-													const envelopePayload = rawAction[envelopeKeys[0]];
-													const knownEnvelopeType = STANDARD_ACTIONS.has(envelopeKey)
-														|| EXTENDED_ACTIONS.has(envelopeKey)
-														|| ["buscar_texturas", "insertar_modelo", "verify_textures", "verify_models"].includes(envelopeKey);
-													if (knownEnvelopeType && envelopePayload && typeof envelopePayload === "object" && !Array.isArray(envelopePayload)) {
-														rawAction = { ...envelopePayload, type: envelopeKey };
-													}
-													}
-											}
-										}
+							const hasActionType = ["type", "operation", "action", "actionType", "action_type", "command"]
+								.some((field) => typeof rawAction[field] === "string" && rawAction[field].trim() !== "");
+							if (!hasActionType) {
+								const envelopeKeys = Object.keys(rawAction);
+								if (envelopeKeys.length === 1) {
+									const envelopeKey = envelopeKeys[0].trim().toLowerCase();
+									const envelopePayload = rawAction[envelopeKeys[0]];
+									const knownEnvelopeType = STANDARD_ACTIONS.has(envelopeKey)
+										|| EXTENDED_ACTIONS.has(envelopeKey)
+										|| ["buscar_texturas", "insertar_modelo", "verify_textures", "verify_models"].includes(envelopeKey);
+									if (knownEnvelopeType && envelopePayload && typeof envelopePayload === "object" && !Array.isArray(envelopePayload)) {
+										rawAction = { ...envelopePayload, type: envelopeKey };
+									}
+								}
+							}
 												// Algunos modelos omiten "type" o colocan la operación en "name".
 							const typeFields = ["type", "operation", "action", "actionType", "action_type", "command"];
 							const initialType = typeFields.map((field) => String(rawAction[field] || "").trim().toLowerCase()).find(Boolean) || "";
