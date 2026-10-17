@@ -4375,7 +4375,7 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 		};
 
 		let texto = await preguntarOmniRoute(mensajesRevision, opcionesRevision);
-		guardarRespuestaRevisionVisual("respuesta-inicial", texto, modeloRevision);
+		guardarRespuestaRevisionVisual("respuesta-inicial", texto, OMNIROUTE_VISION_MODEL || OMNIROUTE_MODEL_ID);
 		let result = convertirRespuestaRevision(texto);
 
 		// Algunos enrutamientos devuelven solo una etiqueta de seguridad, por ejemplo
@@ -4409,7 +4409,7 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 				timeoutMs: Math.min(Number(process.env.OMNIROUTE_TIMEOUT_MS || 120000), 120000),
 				attemptsPerKey: 1
 			});
-			guardarRespuestaRevisionVisual("respuesta-reintento", textoReintento, modeloRevision);
+			guardarRespuestaRevisionVisual("respuesta-reintento", textoReintento, OMNIROUTE_VISION_MODEL || OMNIROUTE_MODEL_ID);
 			result = convertirRespuestaRevision(textoReintento);
 		}
 
