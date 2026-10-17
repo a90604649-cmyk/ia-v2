@@ -616,25 +616,17 @@ function limpiarMarkdownJson(texto) {
 							}
 
 							function extraerEsperaColaMs(mensaje) {
-								const text = String(mensaje || "").toLowerCase();
+	const text = String(mensaje || "").toLowerCase();
+	// OmniRoute puede devolver "reset after 48s" sin mencionar "queue budget".
+	const match = text.match(/reset after\s+(\d+(?:\.\d+)?)\s*s\b/i);
+	if (!match) return null;
 
-								if (!text.includes("queue budget")) {
-									return null;
-									}
+	const resetMs = Number(match[1]) * 1000;
+	if (!Number.isFinite(resetMs) || resetMs < 0) return null;
 
-									const match = text.match(/reset after\s+(\d+(?:\.\d+)?)\s*s\b/i);
-									if (!match) {
-										return null;
-										}
-
-										const resetMs = Number(match[1]) * 1000;
-										if (!Number.isFinite(resetMs) || resetMs < 0) {
-											return null;
-											}
-
-											// Espera un segundo adicional para no reintentar justo en el límite.
-											return Math.min(30000, Math.max(1000, Math.ceil(resetMs) + 1000));
-											}
+	// Respeta el plazo indicado (hasta 5 min) y añade margen para no reintentar justo en el límite.
+	return Math.min(300000, Math.max(1000, Math.ceil(resetMs) + 1500));
+}
 
 								function esperar(ms) {
 									return new Promise(
