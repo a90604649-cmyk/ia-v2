@@ -1,100 +1,92 @@
-# Roblox AI Bridge
+# Roblox VFX Authoring Bridge
 
-Puente Node.js para Roblox Studio con **OmniRoute como único proveedor**. OmniRoute expone una API compatible con OpenAI y con `model=auto` se encarga de seleccionar el proveedor/modelo disponible.
+Herramienta especializada para crear y refinar efectos visuales directamente en Roblox Studio mediante OmniRoute y un plugin de Studio. El objetivo no es generar scripts para que el usuario los ejecute: es construir la jerarquía visual y configurar sus propiedades dentro del proyecto abierto.
 
-El mismo flujo sirve para conversación, razonamiento de programación, corrección de bugs, creación de sistemas, cambios en varios scripts y generación de animaciones R6.
+## Alcance actual
+
+- Crear y organizar instancias visuales en modo edición.
+- Configurar propiedades tipadas como Vector3, Color3, CFrame, NumberRange, NumberSequence y ColorSequence.
+- Trabajar con piezas auxiliares, Attachments, ParticleEmitters, Beams, Trails y luces compatibles con el bridge.
+- Consultar el catálogo de objetos real del proyecto para respetar rutas existentes.
+- Mantener los cambios separados en la rama `vfx-specialization`.
+
+## Límites que todavía deben probarse
+
+- La creación y asignación de propiedades aún debe verificarse en Roblox Studio real.
+- El servidor ya tiene el receptor de capturas y la lógica de revisión visual acotada, pero todavía falta conectar la captura y el envío desde el plugin de Studio. Hasta que se pruebe ese recorrido completo, la IA no puede afirmar que ha evaluado visualmente el resultado.
+- Una prueba de juego no sustituye la revisión visual.
+- No se garantiza que toda respuesta del modelo sea válida; hay que verificar las acciones en el plugin y el registro de Studio.
+
+## Requisitos
+
+- Node.js 18 o superior.
+- OmniRoute disponible en la máquina local con un endpoint compatible con OpenAI Chat Completions.
+- Plugin Roblox AI Bridge instalado en Roblox Studio.
+- HTTP requests habilitadas para Studio cuando corresponda.
 
 ## Configuración
 
-Usa Node.js 18 o superior.
-
-Crea `ia/.env` a partir de `ia/.env.example`:
+Desde la carpeta `ia/`, copia `.env.example` como `.env` (en Windows PowerShell: `Copy-Item .env.example .env`) y reemplaza `pega_tu_clave_local_aqui` por tu clave de OmniRoute:
 
 ```env
 OMNIROUTE_API_KEY=tu_clave_de_omniroute
 OMNIROUTE_URL=http://127.0.0.1:20128/v1/chat/completions
-OMNIROUTE_MODEL=auto
-OMNIROUTE_ENABLED=true
+OMNIROUTE_MODEL=nvidia/nvidia/nemotron-3-ultra-550b-a55b
+OMNIROUTE_VISION_MODEL=
+NVIDIA_API_KEY=
+NVIDIA_VISION_URL=https://integrate.api.nvidia.com/v1/chat/completions
+NVIDIA_VISION_MODEL=nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
+NVIDIA_VISION_FALLBACK_MODEL=meta/llama-3.2-11b-vision-instruct
+NVIDIA_VISION_TIMEOUT_MS=90000
+# Nemotron Omni ya agotó el tiempo límite; deja que el fallback se active en 25 s.
+NVIDIA_VISION_PRIMARY_TIMEOUT_MS=25000
+# Opcional: API Key de Open Cloud con permiso creator-store-product:read para la búsqueda moderna del Creator Store.
+ROBLOX_CREATOR_STORE_API_KEY=
 OMNIROUTE_TIMEOUT_MS=300000
-OMNIROUTE_PROGRESS=true
+OMNIROUTE_REASONING_EFFORT=none
 
 PORT=3000
 PROJECT_CONTEXT_PORT=3001
 PROJECT_CONTEXT_HOST=0.0.0.0
+BRIDGE_INPUT_PORT=3030
 ```
 
-La `OMNIROUTE_API_KEY` es la clave generada en OmniRoute en **Endpoints / Claves registradas**. No guardes la clave real en Git.
-
-No subas `.env` al repositorio.
+La clave de OmniRoute se guarda solo en `.env`. No la pegues en el código ni la subas a GitHub. La búsqueda moderna del Creator Store puede activarse con `ROBLOX_CREATOR_STORE_API_KEY`, una API Key de Open Cloud con el permiso `creator-store-product:read`. Es opcional: si la dejas vacía, el bridge intenta los endpoints de búsqueda de respaldo, pero estos pueden no devolver resultados. Si `.env` ya existe, añade allí la variable manualmente; cambiar `.env.example` no modifica tu archivo local. Para referencias visuales, si Nemotron Omni devuelve un error de endpoint degradado, el bridge prueba `NVIDIA_VISION_FALLBACK_MODEL` (`meta/llama-3.2-11b-vision-instruct`), un modelo de visión con entrada de imágenes listado en NVIDIA NIM. El timeout visual independiente predeterminado es `NVIDIA_VISION_TIMEOUT_MS=90000` (90 segundos), en vez de esperar los cinco minutos del timeout general. Como Nemotron Omni ya ha agotado el tiempo límite en esta instalación, `NVIDIA_VISION_PRIMARY_TIMEOUT_MS=25000` limita sus intentos a 25 segundos para activar antes el modelo alternativo. `OMNIROUTE_MODEL` sigue siendo el modelo de texto para las solicitudes normales. Cuando se adjunta una imagen, el bridge usa primero la API visual directa de NVIDIA si `NVIDIA_API_KEY` está configurada; esta clave es independiente de `OMNIROUTE_API_KEY`. Si no, usa `OMNIROUTE_VISION_MODEL`, que debe ser el ID exacto de un modelo con entrada de imagen que aparezca en `GET /v1/models`. No se asigna un modelo de OmniRoute por defecto para evitar el 404 que aparece cuando el ID no está disponible. La ventana de peticiones también normaliza saltos de línea para que el marcador `@img` no se convierta en una segunda solicitud. `OMNIROUTE_API_KEY` debe seguir siendo la clave local de OmniRoute; la credencial de NVIDIA se configura dentro de OmniRoute. El modelo de ejemplo es `nvidia/nvidia/nemotron-3-ultra-550b-a55b`, que debe aparecer disponible en el catálogo de tu instancia. El bridge no fija `max_tokens`; OmniRoute y el proveedor aplican sus cuotas propias. Para errores de cola con `reset after Ns`, el bridge reintenta hasta tres intentos y espera el intervalo indicado más un segundo. Esto mejora el reintento, pero no evita que un proveedor saturado siga fallando. Si ya tienes un `.env` creado, editar `.env.example` no lo modifica: abre `ia/.env` y cambia manualmente la línea `OMNIROUTE_MODEL` a `nvidia/nvidia/nemotron-3-ultra-550b-a55b`. Conserva `OMNIROUTE_API_KEY` como tu clave local de OmniRoute.
 
 ## Ejecución
 
-Desde `ia/`:
+Desde la carpeta `ia/`:
 
 ```bash
 npm install
 npm start
 ```
 
-El servidor queda en `http://127.0.0.1:3000` y el contexto del proyecto en `http://127.0.0.1:3001`.
+El bridge escucha en `http://127.0.0.1:3000` y el contexto del proyecto usa el puerto `3001`.
 
-## Flujo de programación
+## Flujo
 
-Usuario → Roblox AI Bridge → **OmniRoute (`model=auto`)** → proveedor/modelo seleccionado → análisis del proyecto real → cambios → validación → Roblox Studio.
+Usuario describe un VFX → modelo diseña las capas → OmniRoute devuelve acciones estructuradas → el bridge aplica instancias y propiedades en Studio → se revisan errores y apariencia por separado.
 
-No existe fallback directo a otro proveedor: si OmniRoute no está disponible, el Bridge informa del error en lugar de cambiar de proveedor por su cuenta.
-
-## Scripts
-
-- `create_script`
-- `create_local_script`
-- `create_module_script`
-- `update_script`
-- `update_local_script`
-- `update_module_script`
-- `delete_script`
-- `delete_local_script`
-- `delete_module_script`
-
-## Remotes y carpetas
-
-- `create_remote_event`
-- `create_remote_function`
-- `delete_remote_event`
-- `delete_remote_function`
-- `create_folder`
-- `delete_folder`
-
-## Instancias y propiedades
-
-El bridge acepta acciones extendidas para trabajar con objetos de Roblox:
+## Acciones de instancia
 
 - `create_instance`
-- `delete_instance`
 - `set_property`
 - `set_properties`
 - `rename_instance`
 - `move_instance`
+- `delete_instance` solo para eliminaciones solicitadas explícitamente
 
-Las acciones extendidas pueden crear y configurar objetos como `Part`, `MeshPart`, `Model`, `Tool`, `RemoteEvent`, `RemoteFunction`, `Folder`, GUI, `Attachment`, `Motor6D` y otros tipos soportados por el plugin.
-
-Para propiedades se admiten valores normales y valores tipados como `Vector2`, `Vector3`, `Color3`, `CFrame`, `UDim2`, `BrickColor` y `Enum`.
-
-## Project Context
-
-El plugin escanea `Script`, `LocalScript`, `ModuleScript` y un catálogo limitado de objetos importantes para que la IA conozca las rutas reales del proyecto. El escaneo inicial ocurre al conectar y el automático está limitado a una actualización cada 5 minutos.
-
-## Animaciones R6
-
-El pipeline de animaciones R6 conserva la calibración y memoria existentes del proyecto.
+La IA especializada no debe crear scripts, remotes ni pruebas de juego como sustituto del efecto.
 
 ## Endpoints
 
 - `GET /` estado general del bridge.
 - `GET /health` estado de configuración del proveedor.
-- `POST /r6-calibration` recibe la calibración R6.
-- `GET /r6-calibration` devuelve la calibración actual.
-- `POST /selected-script` recibe el script seleccionado desde Roblox Studio.
-- `GET /next` entrega y limpia las acciones pendientes para Roblox Studio.
+- `GET /next` entrega las acciones pendientes al plugin.
+- `POST /execution-results` recibe el resultado real de las acciones aplicadas por el plugin.
+- `POST /visual-capture` recibe una captura PNG del viewport para revisión visual.
 - `POST /project-scan` recibe el escaneo del proyecto.
-- `GET /project-context` devuelve el contexto relevante para una petición.
+- `GET /project-context` devuelve contexto relevante del proyecto.
+
+Consulta `PROJECT_LOG.md` para el estado de trabajo y las pruebas pendientes.

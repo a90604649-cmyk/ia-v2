@@ -1,8 +1,16 @@
 
 import "dotenv/config";
 import express from "express";
+import {
+	installDiagnosticLogging,
+	installFatalErrorHandlers,
+	requestIdMiddleware,
+	expressErrorMiddleware
+} from "./diagnostics.js";
 
 const app = express();
+installDiagnosticLogging("ProjectContext");
+installFatalErrorHandlers("ProjectContext");
 
 const PORT = Number(
     process.env.PROJECT_CONTEXT_PORT || 3001
@@ -20,11 +28,14 @@ const MAX_RELATED_SCRIPTS = 60;
 const MAX_OBJECTS_WITH_MATCHES = 250;
 const MAX_OBJECTS_WITHOUT_MATCHES = 150;
 
+app.use(requestIdMiddleware);
 app.use(
     express.json({
         limit: "20mb"
     })
 );
+// Captura JSON malformado y peticiones demasiado grandes.
+app.use(expressErrorMiddleware("ProjectContext"));
 
 const scripts = new Map();
 const objects = new Map();
@@ -142,10 +153,15 @@ function normalizeObject(object) {
         return null;
     }
 
+    const estructura = String(
+        object.estructura || ""
+    ).trim().slice(0, 420);
+
     return {
         className,
         name,
-        path
+        path,
+        estructura
     };
 }
 
@@ -411,6 +427,12 @@ function scoreObject(
     const pathLower =
         object.path.toLowerCase();
 
+    const estructura =
+        String(object.estructura || "").toLowerCase();
+
+    const estructuraTokens =
+        tokenize(estructura);
+
     let score = 0;
 
     const signals = [];
@@ -456,6 +478,14 @@ function scoreObject(
             signals.push(
                 `ruta-parcial:${term}`
             );
+        }
+
+        if (estructuraTokens.includes(term)) {
+            score += 15;
+            signals.push(`estructura:${term}`);
+        } else if (estructura.includes(term)) {
+            score += 8;
+            signals.push(`estructura-parcial:${term}`);
         }
     }
 
@@ -506,7 +536,10 @@ function buildObjects() {
                 object.name,
 
             path:
-                object.path
+                object.path,
+
+            estructura:
+                object.estructura || ""
         }))
         .sort((a, b) =>
             `${a.path}/${a.name}`.localeCompare(
@@ -809,6 +842,10 @@ function selectRelevantScripts(
                     path:
                         item.object
                             .path,
+
+                    estructura:
+                        item.object
+                            .estructura || "",
 
                     score:
                         item.score,
@@ -1192,6 +1229,8 @@ app.get(
     }
 );
 
+app.use(expressErrorMiddleware("ProjectContext"));
+
 const server =
     app.listen(
         PORT,
@@ -1253,32 +1292,7 @@ server.on(
     }
 );
 
-server.on(
-    "close",
-    () => {
-        console.error(
-            "⚠️ Project Context cerró el listener HTTP inesperadamente."
-        );
-    }
-);
 
-process.on(
-    "uncaughtException",
-    (error) => {
-        console.error(
-            "❌ uncaughtException en Project Context:",
-            error
-        );
-    }
-);
+// Los fallos no controlados se registran con stack y detienen el proceso para que el launcher lo reinicie.
 
-process.on(
-    "unhandledRejection",
-    (reason) => {
-        console.error(
-            "❌ unhandledRejection en Project Context:",
-            reason
-        );
-    }
-);
 
