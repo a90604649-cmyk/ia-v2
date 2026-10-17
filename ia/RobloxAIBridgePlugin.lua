@@ -128,6 +128,7 @@ local VFX_INSTANCE_CLASSES = {
 	Frame = true,
 	ImageLabel = true,
 	ImageButton = true,
+	TextLabel = true,
 	UIGradient = true,
 	UICorner = true
 }
@@ -355,6 +356,7 @@ local PROPIEDADES_VISUALES = {
 	SurfaceGui = {"Face", "LightInfluence", "AlwaysOnTop"},
 	ImageLabel = {"Image", "ImageColor3", "ImageTransparency"},
 	ImageButton = {"Image", "ImageColor3", "ImageTransparency"},
+	TextLabel = {"Text", "TextColor3", "TextTransparency", "TextStrokeColor3", "TextStrokeTransparency", "TextSize", "TextScaled", "Font", "BackgroundTransparency", "Size", "Position", "Rotation", "Visible", "TextXAlignment", "TextYAlignment", "RichText", "TextWrapped"},
 	UIGradient = {"Color", "Rotation", "Transparency"}
 }
 
