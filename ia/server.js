@@ -13,6 +13,7 @@ import {
 	existsSync,
 	readFileSync,
 	writeFileSync,
+	appendFileSync,
 	readdirSync,
 	statSync,
 	renameSync,
@@ -54,6 +55,53 @@ let lastVisualCapture = null;
 let referenciaVisualActual = null;
 let visualReviewCycles = 0;
 const MAX_VISUAL_REVIEW_CYCLES = 2;
+
+// Guarda únicamente el texto devuelto por la revisión visual para depurar respuestas
+// que no respeten JSON. El archivo local está excluido de Git y no incluye imágenes.
+const RUTA_DEBUG_REVISION_VISUAL = path.resolve(
+	process.cwd(),
+	"visual-review-debug.txt"
+);
+const MAX_CARACTERES_DEBUG_REVISION = 40000;
+
+function guardarRespuestaRevisionVisual(etapa, respuesta, modelo = "") {
+	const respuestaCompleta = String(respuesta ?? "");
+	const respuestaGuardada = respuestaCompleta.length > MAX_CARACTERES_DEBUG_REVISION
+		? respuestaCompleta.slice(0, MAX_CARACTERES_DEBUG_REVISION) +
+			"\n[RESPUESTA RECORTADA PARA EL ARCHIVO DE DIAGNÓSTICO]"
+		: respuestaCompleta;
+
+	try {
+		// Evita que el archivo de depuración crezca indefinidamente.
+		if (
+			existsSync(RUTA_DEBUG_REVISION_VISUAL) &&
+			statSync(RUTA_DEBUG_REVISION_VISUAL).size > 900000
+		) {
+			writeFileSync(RUTA_DEBUG_REVISION_VISUAL, "", "utf8");
+		}
+
+		const bloque = [
+			"",
+			"============================================================",
+			"Fecha: " + new Date().toISOString(),
+			"Etapa: " + String(etapa || "desconocida"),
+			"Modelo: " + String(modelo || "(modelo predeterminado)"),
+			"Longitud original: " + respuestaCompleta.length + " caracteres",
+			"RESPUESTA ORIGINAL DEL MODELO:",
+			"------------------------------------------------------------",
+			respuestaGuardada || "(respuesta vacía)",
+			"============================================================",
+			""
+		].join("\n");
+
+		appendFileSync(RUTA_DEBUG_REVISION_VISUAL, bloque, "utf8");
+	} catch (error) {
+		console.warn(
+			"[RobloxAI] No se pudo guardar la respuesta de revisión visual:",
+			error instanceof Error ? error.message : String(error)
+		);
+	}
+}
 
 let contextoScriptSeleccionado = null;
 let contextoProyectoActual = null;
@@ -4327,6 +4375,7 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 		};
 
 		let texto = await preguntarOmniRoute(mensajesRevision, opcionesRevision);
+		guardarRespuestaRevisionVisual("respuesta-inicial", texto, modeloRevision);
 		let result = convertirRespuestaRevision(texto);
 
 		// Algunos enrutamientos devuelven solo una etiqueta de seguridad, por ejemplo
@@ -4360,6 +4409,7 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 				timeoutMs: Math.min(Number(process.env.OMNIROUTE_TIMEOUT_MS || 120000), 120000),
 				attemptsPerKey: 1
 			});
+			guardarRespuestaRevisionVisual("respuesta-reintento", textoReintento, modeloRevision);
 			result = convertirRespuestaRevision(textoReintento);
 		}
 
