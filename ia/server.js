@@ -1097,7 +1097,7 @@ function variantesBusquedaCatalogo(keyword, tipo = "textura") {
 	if (!clave) return [];
 
 	const variantes = [clave];
-	const esSimbolo = /(?:letra|símbol|simbol|runa|rune|glyph|glifo|sigil|sello|magic circle|círculo mágico|circulo magico|runic|runes|glyphs)/i.test(clave);
+	const esSimbolo = /(?:letra|letter|símbol|simbol|symbol|runa|rune|glyph|glifo|sigil|sello|magic circle|círculo mágico|circulo magico|runic|runes|glyphs)/i.test(clave);
 
 	if (esSimbolo) {
 		if (tipo === "modelo") {
@@ -1320,7 +1320,11 @@ function ordenarModelosPorRelevanciaTextual(candidatos, keyword = "") {
 		"particles", "visual", "with", "from", "the", "and", "for", "of", "to",
 		"de", "del", "para", "con", "una", "uno", "unos", "unas", "las", "los"
 	]);
-	const tokens = [...new Set(normalizar(keyword).split(" ").filter((token) =>
+	const palabrasConsulta = [
+		keyword,
+		...variantesBusquedaCatalogo(keyword, "modelo")
+	].join(" ");
+	const tokens = [...new Set(normalizar(palabrasConsulta).split(" ").filter((token) =>
 		token.length >= 3 && !ignorar.has(token)
 	))];
 	if (tokens.length === 0) {
