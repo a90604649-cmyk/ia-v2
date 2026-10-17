@@ -4288,37 +4288,85 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 	].join("\n\n");
 
 	try {
-		const texto = await preguntarOmniRoute(
-			[
-				{ role: "system", content: VFX_SYSTEM },
-				{
-					role: "user",
-					content: [
-						{ type: "text", text: [
-							"REVISIÓN DESPUÉS DE UNA TANDA DE CAMBIOS.",
-							"Resultado estructural: " + report.successful + " acciones correctas y " + report.failed + " fallidas.",
-							"Resumen real de instancias y propiedades:",
-							detalleEscena || "[sin resumen estructural]",
-							diagnostico,
-							"No borres objetos ni crees scripts/remotes. No declares verificado lo que solo sea una estimación."
-						].join("\n\n") }
-					]
-				}
-			],
+		const mensajesRevision = [
+			{ role: "system", content: VFX_SYSTEM },
 			{
-				json: true,
+				role: "user",
+				content: [
+					{ type: "text", text: [
+						"REVISIÓN DESPUÉS DE UNA TANDA DE CAMBIOS.",
+						"Resultado estructural: " + report.successful + " acciones correctas y " + report.failed + " fallidas.",
+						"Resumen real de instancias y propiedades:",
+						detalleEscena || "[sin resumen estructural]",
+						diagnostico,
+						"No borres objetos ni crees scripts/remotes. No declares verificado lo que solo sea una estimación."
+					].join("\n\n") }
+				]
+			}
+		];
+		const opcionesRevision = {
+			json: true,
+			reasoningEffort: "none",
+			reasoningFormat: "hidden",
+			temperature: 0.1,
+			timeoutMs: Math.min(Number(process.env.OMNIROUTE_TIMEOUT_MS || 120000), 120000),
+			attemptsPerKey: 1
+		};
+		const pareceContenerJson = (respuesta) => {
+			const textoRespuesta = String(respuesta || "");
+			const inicioJson = textoRespuesta.indexOf("{");
+			return inicioJson >= 0 && textoRespuesta.lastIndexOf("}") > inicioJson;
+		};
+		const convertirRespuestaRevision = (respuesta) => {
+			if (!pareceContenerJson(respuesta)) return null;
+			return extraerResultado(respuesta, {
+				repairMode: false,
+				soloAnalisis: false,
+				mensajeUsuario: "Revisión aproximada de VFX; no borrar objetos."
+			});
+		};
+
+		let texto = await preguntarOmniRoute(mensajesRevision, opcionesRevision);
+		let result = convertirRespuestaRevision(texto);
+
+		// Algunos enrutamientos devuelven solo una etiqueta de seguridad, por ejemplo
+		// "User Safety: safe", incluso cuando se solicitó JSON. Reintenta una vez sin
+		// response_format y con el formato de salida reforzado; nunca conviertas esa
+		// etiqueta en acciones ni marques como fallida la tanda original de Studio.
+		if (!result) {
+			console.warn("[RobloxAI] La revisión visual no devolvió JSON utilizable; se intentará una vez con formato explícito.");
+			const mensajesReintento = mensajesRevision.map((mensaje) => ({
+				...mensaje,
+				content: Array.isArray(mensaje.content)
+					? mensaje.content.map((parte) => ({ ...parte }))
+					: mensaje.content
+			}));
+			const ultimaSolicitud = mensajesReintento[mensajesReintento.length - 1];
+			const instruccionesFormato = [
+				"FORMATO OBLIGATORIO DE ESTA RESPUESTA:",
+				"Devuelve exclusivamente un objeto JSON válido, sin Markdown ni texto fuera del objeto.",
+				"El objeto debe incluir la propiedad \"reply\" como texto y la propiedad \"actions\" como arreglo.",
+				"Si no hay una corrección visual respaldada por la evidencia, devuelve exactamente: {\"reply\":\"No se justifican más cambios.\",\"actions\":[]}.",
+				"No devuelvas etiquetas de estado o seguridad; responde con el objeto JSON solicitado."
+			].join("\n");
+			if (Array.isArray(ultimaSolicitud.content)) {
+				ultimaSolicitud.content.push({ type: "text", text: instruccionesFormato });
+			} else {
+				ultimaSolicitud.content = [String(ultimaSolicitud.content || ""), instruccionesFormato].join("\n\n");
+			}
+			const textoReintento = await preguntarOmniRoute(mensajesReintento, {
 				reasoningEffort: "none",
-				reasoningFormat: "hidden",
 				temperature: 0.1,
 				timeoutMs: Math.min(Number(process.env.OMNIROUTE_TIMEOUT_MS || 120000), 120000),
 				attemptsPerKey: 1
-			}
-		);
-		const result = extraerResultado(texto, {
-			repairMode: false,
-			soloAnalisis: false,
-			mensajeUsuario: "Revisión aproximada de VFX; no borrar objetos."
-		});
+			});
+			result = convertirRespuestaRevision(textoReintento);
+		}
+
+		if (!result) {
+			console.warn("[RobloxAI] Revisión visual omitida: OmniRoute no devolvió acciones JSON utilizables tras un reintento. No se han generado ajustes automáticos.");
+			return;
+		}
 		if (!result || result.actions.length === 0) {
 			console.log("[RobloxAI] Revisión aproximada terminada: no se justificaron más cambios.");
 			return;
