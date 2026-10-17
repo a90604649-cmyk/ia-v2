@@ -2236,7 +2236,95 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 										* ============================================================
 										*/
 
-										function normalizarAccion(
+																function normalizarPropiedadesVFX(rawAction, className, mensajeUsuario = "") {
+							const aliases = {
+								size:"Size", position:"Position", orientation:"Orientation", cframe:"CFrame", anchor:"Anchored", anchored:"Anchored",
+								cancollide:"CanCollide", can_collide:"CanCollide", cantouch:"CanTouch", canquery:"CanQuery", material:"Material",
+								color:"Color", color3:"Color3", transparency:"Transparency", texture:"Texture", face:"Face", rate:"Rate",
+								speed:"Speed", lifetime:"Lifetime", lightemission:"LightEmission", lightinfluence:"LightInfluence",
+								emissiondirection:"EmissionDirection", acceleration:"Acceleration", rotation:"Rotation", brightness:"Brightness",
+								range:"Range", enabled:"Enabled", shape:"Shape", width0:"Width0", width1:"Width1", curvesize0:"CurveSize0",
+								curvesize1:"CurveSize1", attachment0:"Attachment0", attachment1:"Attachment1", castshadow:"CastShadow",
+								reflectance:"Reflectance", massless:"Massless", maxdistance:"MaxDistance", zoffset:"ZOffset",
+								visible:"Visible", alwaysontop:"AlwaysOnTop", image:"Image", imagetransparency:"ImageTransparency",
+								imagecolor3:"ImageColor3", text:"Text", textcolor3:"TextColor3", texttransparency:"TextTransparency",
+								textsize:"TextSize", backgroundtransparency:"BackgroundTransparency", bordersizepixel:"BorderSizePixel"
+							};
+							const source = {};
+							if (rawAction.properties && typeof rawAction.properties === "object" && !Array.isArray(rawAction.properties)) {
+								for (const [key, value] of Object.entries(rawAction.properties)) {
+									const canonical = aliases[key.toLowerCase()];
+									if (canonical) source[canonical] = value;
+								}
+							}
+							for (const [key, value] of Object.entries(rawAction || {})) {
+								const canonical = aliases[key.toLowerCase()];
+								if (canonical && !(canonical in source)) source[canonical] = value;
+							}
+							const particle = className === "ParticleEmitter";
+							const toVector3 = (value) => {
+								if (Array.isArray(value) && value.length >= 3 && value.slice(0,3).every((n) => Number.isFinite(Number(n)))) return { type:"Vector3", x:Number(value[0]), y:Number(value[1]), z:Number(value[2]) };
+								if (value && typeof value === "object" && !value.type && ["x","y","z"].every((k) => Number.isFinite(Number(value[k])))) return { type:"Vector3", x:Number(value.x), y:Number(value.y), z:Number(value.z) };
+								return value;
+							};
+							const toEnum = (value, enumName) => {
+								if (typeof value !== "string") return value;
+								const parts = value.trim().split(".");
+								if (parts[0] === "Enum" && parts.length === 3) return { type:"Enum", enum:parts[1] === "EmissionDirection" ? "NormalId" : parts[1], value:parts[2] };
+								if (enumName && /^[A-Za-z][A-Za-z0-9_]*$/.test(value.trim())) return { type:"Enum", enum:enumName, value:value.trim() };
+								return value;
+							};
+							const output = {};
+							for (const [rawKey, rawValue] of Object.entries(source)) {
+								const key = aliases[rawKey.toLowerCase()] || rawKey;
+								let value = rawValue;
+								if (["Size","Position","Orientation","Acceleration"].includes(key)) {
+									if (particle && key === "Size" && Array.isArray(value) && value.length >= 2 && value.every((n) => Number.isFinite(Number(n)))) {
+										value = { type:"NumberSequence", keypoints:[{time:0,value:Math.max(0,Number(value[0]))},{time:1,value:Math.max(0,Number(value[value.length-1]))}] };
+									} else if (!particle || key !== "Size") value = toVector3(value);
+								} else if (["Color","Color3","ImageColor3","TextColor3"].includes(key) && Array.isArray(value) && value.length >= 3 && value.every((n) => Number.isFinite(Number(n)))) {
+									let rgb = value.slice(0,3).map(Number);
+									if (rgb.some((n) => n > 1)) rgb = rgb.map((n) => Math.max(0,Math.min(255,n))/255);
+									value = { type:"Color3", r:rgb[0], g:rgb[1], b:rgb[2] };
+								} else if (["Material","Face","EmissionDirection","Shape"].includes(key)) {
+									value = toEnum(value, key === "Material" ? "Material" : key === "Shape" ? "PartType" : "NormalId");
+									if (typeof value === "string") continue;
+								} else if (key === "Transparency" && typeof value === "number") {
+									if (value < 0 || value > 1) continue;
+									if (particle) value = { type:"NumberSequence", keypoints:[{time:0,value},{time:1,value}] };
+								} else if (particle && key === "Size" && typeof value === "number") {
+									value = { type:"NumberSequence", keypoints:[{time:0,value:Math.max(0,value)},{time:1,value:Math.max(0,value)}] };
+								} else if (particle && ["Speed","Lifetime","Rotation"].includes(key) && typeof value === "number") {
+									value = { type:"NumberRange", min:value, max:value };
+								} else if (key === "Color" && particle && value && typeof value === "object" && value.type === "Color3") {
+									value = { type:"ColorSequence", keypoints:[{time:0,color:{r:value.r,g:value.g,b:value.b}},{time:1,color:{r:value.r,g:value.g,b:value.b}}] };
+								} else if (key === "Color" && typeof value === "string" && !/^[#]?[0-9a-f]{6}$/i.test(value.trim())) {
+									continue;
+								} else if (["Texture","Image"].includes(key) && (typeof value !== "string" || !value.trim())) {
+									continue;
+								}
+								if (value !== undefined && value !== null) output[key] = value;
+							}
+							const request = String(mensajeUsuario || "").toLowerCase();
+							if (["Part","MeshPart","WedgePart","CornerWedgePart"].includes(className)) {
+								if (!("Anchored" in output) && /anchored|anclad[ao]/i.test(request)) output.Anchored = true;
+								if (!("CanCollide" in output) && /sin colision|sin colisiones|no colision|no colisiones/i.test(request)) output.CanCollide = false;
+								if (!("Material" in output) && /neon/i.test(request)) output.Material = { type:"Enum", enum:"Material", value:"Neon" };
+								if (!("Color" in output) && !("Color3" in output)) {
+									let rgb = null;
+									if (/azul|blue|cyan|cian/i.test(request)) rgb = {r:0.05,g:0.55,b:1};
+									else if (/rojo|red/i.test(request)) rgb = {r:1,g:0.08,b:0.08};
+									else if (/verde|green/i.test(request)) rgb = {r:0.08,g:1,b:0.2};
+									else if (/morado|violeta|purple|violet/i.test(request)) rgb = {r:0.55,g:0.1,b:1};
+									else if (/amarillo|dorado|yellow|gold/i.test(request)) rgb = {r:1,g:0.75,b:0.05};
+									else if (/naranja|orange/i.test(request)) rgb = {r:1,g:0.35,b:0.05};
+									if (rgb) output.Color = { type:"Color3", ...rgb };
+								}
+							}
+							return output;
+						}
+
+function normalizarAccion(
 											rawAction,
 											options = {}
 										) {
@@ -2259,13 +2347,49 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 													const envelopePayload = rawAction[envelopeKeys[0]];
 													const knownEnvelopeType = STANDARD_ACTIONS.has(envelopeKey)
 														|| EXTENDED_ACTIONS.has(envelopeKey)
-														|| ["buscar_texturas", "insertar_modelo", "verify_textures", "verify_models"].includes(envelopeKey);
+														|| ["buscar_texturas", "insertar_modelo", "verify_textures", "verify_models"].includes(envel								// Admite rutas completas y el campo "parent" separado usado por algunos modelos.
+								if (type === "create_instance") {
+									const normalizeRoute = (value) => {
+									let route = String(value || "").trim().replaceAll("\\", "/");
+									const root = BASES.find((base) => route.startsWith(base + "."));
+									if (root) route = root + "/" + route.slice(root.length + 1).split(".").join("/");
+									return route;
+								};
+								const fullPath = normalizeRoute(path || rawAction.target || "");
+								const tailName = fullPath.split("/").filter(Boolean).at(-1) || "";
+								const actionLikeName = EXTENDED_ACTIONS.has(name.toLowerCase()) || ["create","instance"].includes(name.toLowerCase());
+								if (typeof rawAction.parent === "string" && rutaValida(normalizeRoute(rawAction.parent))) {
+									path = normalizeRoute(rawAction.parent);
+									if (!name || actionLikeName) name = String(rawAction.targetName || tailName).trim();
+								} else if (fullPath && (actionLikeName || fullPath.endsWith("/" + name) || (rawAction.parent === null && tailName === name))) {
+									const separated = separarTarget(fullPath);
+									if (separated.path && separated.name && rutaValida(separated.path)) {
+										path = separated.path;
+										if (actionLikeName || !name) name = separated.name;
+									}
+								} else if (fullPath) {
+									path = fullPath;
+								}
+								}
+opeKey);
 													if (knownEnvelopeType && envelopePayload && typeof envelopePayload === "object" && !Array.isArray(envelopePayload)) {
 														rawAction = { ...envelopePayload, type: envelopeKey };
 													}
 											}
 										}
-											const repairMode =
+												// Algunos modelos omiten "type" o colocan la operación en "name".
+							const typeFields = ["type", "operation", "action", "actionType", "action_type", "command"];
+							const initialType = typeFields.map((field) => String(rawAction[field] || "").trim().toLowerCase()).find(Boolean) || "";
+							const initialName = String(rawAction.name || rawAction.nombre || "").trim();
+							const initialClass = String(rawAction.className || rawAction.class || rawAction.ClassName || "").trim();
+							const visualClassNames = new Set(["Folder", "Model", "Part", "MeshPart", "WedgePart", "CornerWedgePart", "Attachment", "ParticleEmitter", "Beam", "Trail", "PointLight", "SpotLight", "SurfaceLight", "Highlight", "Texture", "Decal", "SpecialMesh", "BlockMesh", "CylinderMesh", "Fire", "Smoke", "Sparkles", "BillboardGui", "SurfaceGui", "Frame", "ImageLabel", "ImageButton", "TextLabel", "UIGradient", "UICorner"]);
+							if (!initialType && EXTENDED_ACTIONS.has(initialName.toLowerCase())) {
+								rawAction = { ...rawAction, type: initialName.toLowerCase() };
+							} else if (!initialType && visualClassNames.has(initialClass) && (Object.prototype.hasOwnProperty.call(rawAction, "parent") || (rawAction.properties && typeof rawAction.properties === "object"))) {
+								rawAction = { ...rawAction, type: "create_instance" };
+							}
+
+						const repairMode =
 											options.repairMode === true;
 
 											const soloAnalisis =
@@ -2750,12 +2874,7 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 																					path,
 																					name,
 
-																					properties:
-																					rawAction.properties &&
-																					typeof rawAction.properties ===
-																					"object"
-																					? rawAction.properties
-																					: {}
+																					properties: normalizarPropiedadesVFX(rawAction, className, options.mensajeUsuario)
 																				};
 																		}
 
