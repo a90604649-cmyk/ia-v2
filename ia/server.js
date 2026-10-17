@@ -3997,6 +3997,10 @@ function normalizarAccion(
 			}
 			];
 
+
+			const debeConstruirVFXCompleto = !soloAnalisis &&
+				/\b(?:crea|crear|crees|haz|hazme|construye|construir|diseña|diseñar|genera|generar|create|build|make)\b/i.test(String(mensajeUsuario || ""));
+
 			try {
 				console.log(
 					`🤖 OmniRoute diseñando VFX con ${OMNIROUTE_MODEL_ID}...`
@@ -4057,28 +4061,39 @@ function normalizarAccion(
 						}
 					);
 
+										const accionesPrimeraRespuesta = Array.isArray(resultado?.actions) ? resultado.actions : [];
+					const soloBuscaCatalogo = accionesPrimeraRespuesta.length > 0 &&
+						accionesPrimeraRespuesta.every((accion) => accion?.type === "buscar_texturas");
+					const primeraRespuestaVFXIncompleta = debeConstruirVFXCompleto &&
+						accionesPrimeraRespuesta.length > 0 &&
+						accionesPrimeraRespuesta.length < 8 &&
+						!soloBuscaCatalogo;
+
 					if (
 						(!resultado ||
-							resultado.actions
-							.length === 0) &&
+							resultado.actions.length === 0 ||
+							primeraRespuestaVFXIncompleta) &&
 						!soloAnalisis
 						) {
 							console.warn(
-								reparacion
-								? "⚠️ La respuesta de reparación no fue ejecutable. Exigiendo modificación de un objeto REAL."
-								: "⚠️ La primera respuesta VFX no fue ejecutable. Solicitando JSON válido con acciones visuales compatibles..."
+								primeraRespuestaVFXIncompleta
+									? `⚠️ El plan de VFX está incompleto (${accionesPrimeraRespuesta.length}/8 acciones). Solicitando una composición 3D completa...`
+									: (reparacion
+										? "⚠️ La respuesta de reparación no fue ejecutable. Exigiendo modificación de un objeto REAL."
+										: "⚠️ La primera respuesta VFX no fue ejecutable. Solicitando JSON válido con acciones visuales compatibles...")
 							);
 
 							const retry = [
-							"RESPUESTA INVÁLIDA.",
+							primeraRespuestaVFXIncompleta ? "RESPUESTA INCOMPLETA: crea una composición completa, no un objeto aislado." : "RESPUESTA INVÁLIDA.",
 							"No devuelvas solamente action, target o description: devuelve acciones ejecutables.",
-							"Para crear un VFX nuevo puedes crear instancias visuales nuevas; crea primero los padres y después sus hijos.",
+							"Para una creación nueva de VFX profesional, devuelve al menos 8 acciones ejecutables distintas y apunta a 10-18; un Model vacío, una sola Part o una sola acción no cumple la petición.",
+							"Construye una jerarquía 3D deliberada: crea primero un Model contenedor y después varias Parts con tamaños, posiciones, orientaciones, colores, materiales y propiedades apropiados; añade Attachments, ParticleEmitters o luces cuando contribuyan al efecto.",
+							"Configura las propiedades dentro de create_instance cuando sea posible, con una ruta válida para cada objeto hijo.",
+							"Si la búsqueda de recursos no encuentra nada, continúa con objetos nativos de Roblox; no inventes asset IDs.",
 							"No crees scripts, remotes ni pruebas de juego.",
 							"Usa únicamente acciones de instancias y propiedades compatibles con el bridge.",
 							"No modifiques ni borres instancias existentes si no puedes identificarlas con seguridad.",
-							debeProbar
-							? "También debes incluir run_studio_test."
-							: "",
+							debeProbar ? "También debes incluir run_studio_test." : "",
 							"Devuelve solamente JSON."
 							].join("\n");
 
@@ -4241,7 +4256,16 @@ function normalizarAccion(
 
 											// Si Studio aún no recogió una verificación de texturas, no la pierdas:
 											// un id sin verificar deja el efecto invisible.
-											const verificacionesPendientes = pendingActions.filter(
+											if (debeConstruirVFXCompleto && resultado.actions.length < 8) {
+							const resumen = resultado.actions.slice(0, 8).map((accion) =>
+								`${accion.type || "sin_tipo"}:${accion.className || ""} ${accion.name || ""} @ ${accion.path || ""}`.trim()
+							).join(" | ");
+							console.error(`❌ VFX no enviado a Studio: el modelo solo produjo ${resultado.actions.length}/8 acciones ejecutables tras la recuperación. Se bloqueó el plan para evitar un efecto incompleto.`);
+							if (resumen) console.error(`[RobloxAI] Acciones obtenidas: ${resumen}`);
+							return null;
+							}
+
+							const verificacionesPendientes = pendingActions.filter(
 												(accion) => accion && accion.type === "verify_textures"
 											);
 
@@ -4436,6 +4460,11 @@ function normalizarAccion(
 				async function evaluarCapturaVFX(report) {
 	if (!lastVisualCapture || visualReviewCycles >= MAX_VISUAL_REVIEW_CYCLES) return;
 	if (Date.now() - lastVisualCapture.receivedAt > 90000) {
+		lastVisualCapture = null;
+		return;
+	}
+	// Una proyección sin referencia original no se puede comparar; descártala silenciosamente.
+	if (!referenciaVisualActual) {
 		lastVisualCapture = null;
 		return;
 	}
