@@ -1180,8 +1180,11 @@ async function buscarEnCatalogoRoblox(keyword, tipo = "textura") {
 		return candidatos;
 	}
 
+	const avisoApi = ROBLOX_CREATOR_STORE_API_KEY
+		? ""
+		: " La API moderna de Creator Store está desactivada porque falta ROBLOX_CREATOR_STORE_API_KEY en ia/.env; se intentaron los endpoints de respaldo.";
 	console.warn(
-		`[RobloxAI] Creator Store no devolvió candidatos para "${claveBusqueda(keyword)}" tras ${variantes.length} búsqueda(s) y ${proveedores.length} proveedor(es).`
+		`[RobloxAI] Creator Store no devolvió candidatos para "${claveBusqueda(keyword)}" tras ${variantes.length} búsqueda(s) y ${proveedores.length} proveedor(es).` + avisoApi
 	);
 	return [];
 }
@@ -1337,7 +1340,8 @@ function ordenarModelosPorRelevanciaTextual(candidatos, keyword = "") {
 		const score = tokens.reduce((total, token) => total + (nombre.includes(token) ? 1 : 0), 0);
 		return { item, indice, score };
 	});
-	const mejores = puntuados.filter((entrada) => entrada.score > 0)
+	const minimoDeCoincidencias = tokens.length > 1 ? 2 : 1;
+	const mejores = puntuados.filter((entrada) => entrada.score >= minimoDeCoincidencias)
 		.sort((a, b) => b.score - a.score || a.indice - b.indice)
 		.map((entrada) => entrada.item);
 
