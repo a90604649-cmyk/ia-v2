@@ -1196,6 +1196,11 @@ function esperarVerificacionTexturas(
 																	return new Promise((resolve) => {
 																		const timer = setTimeout(() => {
 																			esperasTexturas.delete(requestId);
+																			// No dejar una verificación vencida en la cola por si Studio no la recogió.
+																			const indicePendiente = pendingActions.findIndex(
+																				(accion) => String(accion?.requestId || "") === String(requestId)
+																			);
+																			if (indicePendiente >= 0) pendingActions.splice(indicePendiente, 1);
 																			resolve(null);
 																		}, timeoutMs);
 
@@ -1252,6 +1257,11 @@ function esperarVerificacionTexturas(
 	return new Promise((resolve) => {
 		const timer = setTimeout(() => {
 			esperasModelos.delete(requestId);
+			// Evita que Studio reciba una verificación de modelos que ya venció.
+			const indicePendiente = pendingActions.findIndex(
+				(accion) => String(accion?.requestId || "") === String(requestId)
+			);
+			if (indicePendiente >= 0) pendingActions.splice(indicePendiente, 1);
 			resolve(null);
 		}, timeoutMs);
 		esperasModelos.set(requestId, (results) => {
