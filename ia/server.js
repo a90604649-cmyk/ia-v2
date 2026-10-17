@@ -2377,10 +2377,7 @@ function normalizarAccion(
 											const packed = parsearAccionExtendidaEmpaquetada(rawAction);
 
 											if (packed) {
-																													if (type === "set_property" && rawAction.properties && typeof rawAction.properties === "object" && !Array.isArray(rawAction.properties) && !String(rawAction.property || "").trim()) {
-																	type = "set_properties";
-																}
-if (
+																													if (
 													repairMode &&
 													(
 														packed.type === "create_instance" ||
@@ -2573,7 +2570,10 @@ if (
 													* ACCIÓN ESPECIAL: búsqueda de texturas en el catálogo
 													* público de Roblox. La resuelve el bridge, nunca el plugin.
 													*/
-													if (type === "buscar_texturas") {
+													if (type === "set_property" && rawAction.properties && typeof rawAction.properties === "object" && !Array.isArray(rawAction.properties) && !String(rawAction.property || "").trim()) {
+									type = "set_properties";
+								}
+								if (type === "buscar_texturas") {
 														const keyword = String(
 															rawAction.keyword ||
 															rawAction.query ||
@@ -2854,63 +2854,38 @@ if (
 																	* ========================================================
 																	*/
 
-																	if (
-																		EXTENDED_ACTIONS.has(
-																			type
-																		)
-																	) {
-																		if (
-																			type ===
-																			"create_instance"
-																		) {
-																			if (!className) {
-																				return null;
-																			}
+																	if (EXTENDED_ACTIONS.has(type)) {
+								if (type === "create_instance") {
+									if (!className || repairMode) return null;
+									return {
+										type,
+										className,
+										path,
+										name,
+										properties: normalizarPropiedadesVFX(rawAction, className, options.mensajeUsuario)
+									};
+								}
 
-																			if (repairMode) {
-																				return null;
-																				}
+								if (type === "set_property") {
+									const property = String(rawAction.property || rawAction.propertyName || rawAction.property_name || "").trim();
+									if (!property || ["Parent", "ClassName", "Source", "Archivable"].includes(property)) return null;
+									if (repairMode && !existeObjetoReal(path, name, className)) return null;
+									return { type, className, path, name, property, value: rawAction.value };
+								}
 
-																				return {
-																					type,
-																					className,
-																					path,
-																					name,
-
-																					properties: normalizarPropiedadesVFX(rawAction, className, options.mensajeUsuario) ||
-																						typeof rawAction.properties !==
-																						"object"
-																					) {
-																						return null;
-																					}
-
-																					if (
-																						repairMode &&
-																						!existeObjetoReal(
-																							path,
-																							name,
-																							className
-																						)
-																						) {
-																							console.warn(
-																								"🛑 set_properties rechazado: objeto no encontrado en contexto:",
-																								`${path}/${name}`
-																							);
-
-																							return null;
-																						}
-
-																						return {
-																							type,
-																							className,
-																							path,
-																							name,
-																							properties:
-																							rawAction.properties
-																						};
-																				}
-
-																				if (
+								if (type === "set_properties") {
+									if (!rawAction.properties || typeof rawAction.properties !== "object" || Array.isArray(rawAction.properties)) return null;
+									if (repairMode && !existeObjetoReal(path, name, className)) return null;
+									return {
+										type,
+										className,
+										path,
+										name,
+										properties: normalizarPropiedadesVFX(rawAction, className, options.mensajeUsuario)
+									};
+								}
+							}
+							if (
 																					type ===
 																					"rename_instance"
 																					) {
