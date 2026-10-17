@@ -2446,7 +2446,8 @@ function normalizarAccion(
 												rawAction.name = targetParts[targetParts.length - 1];
 												rawAction.path = targetParts.slice(0, -1).join("/");
 											}
-														}
+														return normalizarAccion(rawAction, options);
+}
 												let type =
 												String(
 													rawAction.type ||
