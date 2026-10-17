@@ -264,6 +264,10 @@ const EXTENDED_MARKER =
 "BUSQUEDA Y REUTILIZACION PARA UNA IMAGEN DE REFERENCIA:",
 "Antes de crear un VFX entero desde cero, examina la estructura visual real de los recursos existentes que aparecen en el contexto. Reutiliza un recurso solo si su geometría, propiedades y jerarquía pueden adaptarse a la silueta de la referencia; no confíes únicamente en el nombre.",
 "Si no hay un VFX existente ni un conjunto de recursos adaptables que conserve los rasgos principales de la referencia, emite buscar_texturas como PRIMERA acción, con palabras clave visuales específicas. Usa tipo=modelo cuando lo que falte sea una forma/VFX completa; para una textura, usa una palabra clave que describa el elemento concreto que se necesita.",
+"Si la referencia contiene letras estilizadas, números, runas, glifos, sigilos, símbolos o marcas extrañas, descríbelos explícitamente como elementos principales de la composición: silueta, orientación, disposición, grosor de trazo, espacios vacíos, color y relación con las capas de energía.",
+"Cuando esos símbolos sean importantes y falte un recurso adecuado, puedes emitir hasta DOS acciones buscar_texturas en la respuesta inicial: una de tipo textura con búsqueda concreta de decal/glifo y otra de tipo modelo con búsqueda de efecto/símbolo mágico completo si aporta geometría reutilizable. No mezcles acciones de creación en esa primera respuesta de búsqueda; espera los resultados y después combínalos.",
+"No insertes resultados a ciegas: usa el decal/modelo encontrado solo si su miniatura, nombre y estructura dan evidencia de que encaja. Combínalo con geometría 3D independiente, trazos/partes, aros o capas de energía y partículas según la imagen; no dejes que un solo decal plano sustituya todo el efecto.",
+"Si no existe un glifo que coincida, conserva la composición mediante contornos y trazos de geometría compatibles; si el texto es legible y ayuda a la referencia, también puedes usar TextLabel en un BillboardGui o SurfaceGui sobre una parte de anclaje. No inventes un símbolo desconocido ni afirmes que es idéntico.",
 "Espera el resultado de la búsqueda. Si hay miniaturas y visión disponibles, los candidatos se ordenan por semejanza visual; los modelos también se validan en Studio antes de insertarse. No afirmes que se encontró algo parecido si no hay evidencia, y no insertes un modelo solo porque se pueda cargar. Si no aparece un candidato adecuado, construye el efecto con geometría y recursos útiles disponibles.",
 "",
 "COMO REPRODUCIR UNA IMAGEN DE REFERENCIA:",
@@ -958,13 +962,16 @@ const esperasModelos = new Map();
 												return /^\d+$/.test(limpio) ? limpio : null;
 												}
 
-												async function pedirJson(url, timeoutMs = 12000) {
+												async function pedirJson(url, timeoutMs = 9000, headersExtra = {}) {
 	try {
 		const response = await fetch(url, {
-			headers: { Accept: "application/json" },
+			headers: { Accept: "application/json", ...headersExtra },
 			signal: AbortSignal.timeout(timeoutMs)
 		});
 		if (!response.ok) {
+			let host = "invalid-url";
+			try { host = new URL(url).host; } catch {}
+			console.warn(`[RobloxAI] Catálogo externo respondió HTTP ${response.status} (${host}); se probará otro proveedor.`);
 			return null;
 		}
 		return await response.json();
@@ -976,130 +983,207 @@ const esperasModelos = new Map();
 	}
 }
 
-												function idsDeCatalogoModerno(datos) {
-														const lista = Array.isArray(datos?.data)
-														? datos.data
-														: Array.isArray(datos)
-														? datos
-														: [];
+												function itemsDeRespuestaCatalogo(datos) {
+	const formas = [
+		datos?.data,
+		datos?.items,
+		datos?.Items,
+		datos?.results,
+		datos?.Results,
+		datos?.assets,
+		datos?.Assets,
+		datos?.data?.items,
+		datos?.data?.assets
+	];
+	for (const forma of formas) {
+		if (Array.isArray(forma)) return forma;
+	}
+	return Array.isArray(datos) ? datos : [];
+}
 
-														return lista
-														.map((item) => {
-															const id = String(item?.id ?? "").trim();
-															const nombre = String(item?.name ?? "").trim();
-															const tipo = String(item?.assetType ?? "").trim();
+function idsDeCatalogoModerno(datos, tipoEsperado = "Decal") {
+	return itemsDeRespuestaCatalogo(datos)
+		.map((entrada) => {
+			const item = entrada?.asset && typeof entrada.asset === "object"
+				? { ...entrada, ...entrada.asset }
+				: entrada;
+			const id = String(
+				item?.id ?? item?.assetId ?? item?.AssetId ?? item?.asset_id ?? ""
+			).trim();
+			const nombre = String(item?.name ?? item?.Name ?? item?.title ?? "").trim();
+			const tipoCrudo = item?.assetType?.name ?? item?.assetTypeName ??
+				item?.assetType ?? item?.typeName ?? item?.category ?? "";
+			const tipo = String(
+				typeof tipoCrudo === "object" ? (tipoCrudo.name ?? tipoCrudo.value ?? "") : tipoCrudo
+			).trim() || tipoEsperado;
 
-															if (!/^\d+$/.test(id)) {
-																return null;
-																}
+			if (!/^\d+$/.test(id)) return null;
+			return { id, nombre, tipo };
+		})
+		.filter(Boolean);
+}
 
-																return { id, nombre, tipo };
-														})
-														.filter(Boolean);
-														}
+function idsDeCatalogoClasico(datos, tipoEsperado = "Decal") {
+	return itemsDeRespuestaCatalogo(datos)
+		.map((item) => {
+			const id = String(
+				item?.AssetId ?? item?.assetId ?? item?.assetID ??
+				item?.asset_id ?? item?.id ?? item?.Id ?? ""
+			).trim();
+			const nombre = String(
+				item?.Name ?? item?.name ?? item?.Title ?? item?.title ?? ""
+			).trim();
+			const tipoCrudo = item?.Type ?? item?.type ?? item?.assetType ?? tipoEsperado;
+			const tipo = String(
+				typeof tipoCrudo === "object" ? (tipoCrudo.name ?? tipoCrudo.value ?? "") : tipoCrudo
+			).trim() || tipoEsperado;
 
-														function idsDeCatalogoClasico(datos) {
-															const lista = Array.isArray(datos)
-															? datos
-															: Array.isArray(datos?.Items)
-															? datos.Items
-															: [];
+			if (!/^\d+$/.test(id)) return null;
+			return { id, nombre, tipo };
+		})
+		.filter(Boolean);
+}
 
-															return lista
-															.map((item) => {
-																const id = String(
-																	item?.AssetId ?? item?.assetId ?? item?.id ?? ""
-																).trim();
+const ROBLOX_CREATOR_STORE_API_KEY = String(
+	process.env.ROBLOX_CREATOR_STORE_API_KEY || ""
+).trim();
 
-																const nombre = String(
-																	item?.Name ?? item?.name ?? ""
-																).trim();
+const proveedorCreatorStore = (tipoEsperado) => ({
+	nombre: `Creator Store API (${tipoEsperado})`,
+	url: (keyword) => {
+		const categoria = tipoEsperado === "Modelo" ? "Model" : "Decal";
+		return `https://apis.roblox.com/toolbox-service/v2/assets:search?searchCategoryType=${categoria}&query=${encodeURIComponent(keyword)}&maxPageSize=30`;
+	},
+	headers: ROBLOX_CREATOR_STORE_API_KEY
+		? { "x-api-key": ROBLOX_CREATOR_STORE_API_KEY }
+		: {},
+	leer: (datos) => idsDeCatalogoModerno(datos, tipoEsperado)
+});
 
-																if (!/^\d+$/.test(id)) {
-																	return null;
-																	}
+const PROVEEDORES_CATALOGO = [
+	...(ROBLOX_CREATOR_STORE_API_KEY ? [proveedorCreatorStore("Decal")] : []),
+	{
+		nombre: "Creator Store legacy (Decals)",
+		url: (keyword) =>
+			`https://search.roblox.com/catalog/json?Category=Decals&Keyword=${encodeURIComponent(keyword)}&SortType=0&ResultsPerPage=40&PageNumber=1`,
+		leer: (datos) => idsDeCatalogoClasico(datos, "Decal").map((item) => ({ ...item, tipo: "Decal" }))
+	},
+	{
+		nombre: "Creator Store legacy (Decals, actualizados)",
+		url: (keyword) =>
+			`https://search.roblox.com/catalog/json?Category=Decals&Keyword=${encodeURIComponent(keyword)}&SortType=3&ResultsPerPage=40&PageNumber=1`,
+		leer: (datos) => idsDeCatalogoClasico(datos, "Decal").map((item) => ({ ...item, tipo: "Decal" }))
+	}
+];
 
-																	return { id, nombre, tipo: "Decal" };
-															})
-															.filter(Boolean);
-															}
+const PROVEEDORES_MODELOS = [
+	...(ROBLOX_CREATOR_STORE_API_KEY ? [proveedorCreatorStore("Modelo")] : []),
+	{
+		nombre: "Creator Store legacy (Models)",
+		url: (keyword) =>
+			`https://search.roblox.com/catalog/json?Category=Models&Keyword=${encodeURIComponent(keyword)}&SortType=0&ResultsPerPage=40&PageNumber=1`,
+		leer: (datos) => idsDeCatalogoClasico(datos, "Modelo").map((item) => ({ ...item, tipo: "Modelo" }))
+	},
+	{
+		nombre: "Creator Store legacy (Models, actualizados)",
+		url: (keyword) =>
+			`https://search.roblox.com/catalog/json?Category=Models&Keyword=${encodeURIComponent(keyword)}&SortType=3&ResultsPerPage=40&PageNumber=1`,
+		leer: (datos) => idsDeCatalogoClasico(datos, "Modelo").map((item) => ({ ...item, tipo: "Modelo" }))
+	}
+];
 
-															const PROVEEDORES_CATALOGO = [
-															{
-																nombre: "catalog.roblox.com/v1/search/items",
-																url: (keyword) =>
-																`https://catalog.roblox.com/v1/search/items?category=All&creatorType=User&keyword=${encodeURIComponent(keyword)}&limit=30`,
-																leer: idsDeCatalogoModerno
-															},
-															{
-																nombre: "catalog.roblox.com/v1/search/items (todo)",
-																url: (keyword) =>
-																`https://catalog.roblox.com/v1/search/items?category=All&keyword=${encodeURIComponent(keyword)}&limit=30`,
-																leer: idsDeCatalogoModerno
-															},
-															{
-																nombre: "search.roblox.com/catalog/json",
-																url: (keyword) =>
-																`https://search.roblox.com/catalog/json?Category=Decals&Keyword=${encodeURIComponent(keyword)}&SortType=3&ResultsPerPage=40&PageNumber=1`,
-																leer: idsDeCatalogoClasico
-															}
-															];
+function variantesBusquedaCatalogo(keyword, tipo = "textura") {
+	const clave = claveBusqueda(keyword);
+	if (!clave) return [];
 
-															const PROVEEDORES_MODELOS = [
-															{
-																nombre: "catalog.roblox.com/v1/search/items (modelos)",
-																url: (keyword) =>
-																`https://catalog.roblox.com/v1/search/items?category=Models&creatorType=User&keyword=${encodeURIComponent(keyword)}&limit=30`,
-																leer: idsDeCatalogoModerno
-															},
-															{
-																nombre: "search.roblox.com/catalog/json (modelos)",
-																url: (keyword) =>
-																`https://search.roblox.com/catalog/json?Category=Models&Keyword=${encodeURIComponent(keyword)}&SortType=3&ResultsPerPage=40&PageNumber=1`,
-																leer: (datos) =>
-																idsDeCatalogoClasico(datos).map((item) => ({ ...item, tipo: "Modelo" }))
-															}
-															];
+	const variantes = [clave];
+	const esSimbolo = /(?:letra|símbol|simbol|runa|rune|glyph|glifo|sigil|sello|magic circle|círculo mágico|circulo magico|runic|runes|glyphs)/i.test(clave);
 
-															async function buscarEnCatalogoRoblox(keyword, tipo = "textura") {
-																const clave = claveBusqueda(keyword);
+	if (esSimbolo) {
+		if (tipo === "modelo") {
+			variantes.push("magic circle VFX", "rune magic effect", "glowing symbol effect");
+		} else {
+			variantes.push("rune symbol decal", "magic circle decal", "glowing glyph");
+		}
+	} else if (tipo === "modelo") {
+		variantes.push(`${clave} VFX`, `${clave} particle effect`, `${clave} visual effect`);
+	} else {
+		variantes.push(`${clave} decal`, `${clave} particle texture`, `${clave} VFX texture`);
+	}
 
-																if (!clave) {
-																	return [];
-																	}
+	const unicas = [];
+	const vistas = new Set();
+	for (const variante of variantes) {
+		const limpia = claveBusqueda(variante);
+		const id = limpia.toLowerCase();
+		if (limpia && !vistas.has(id)) {
+			vistas.add(id);
+			unicas.push(limpia);
+		}
+		if (unicas.length >= 4) break;
+	}
+	return unicas;
+}
 
-																	for (const proveedor of (tipo === "modelo" ? PROVEEDORES_MODELOS : PROVEEDORES_CATALOGO)) {
-																		const datos = await pedirJson(proveedor.url(clave));
-																		const encontrados = proveedor.leer(datos);
+async function buscarEnCatalogoRoblox(keyword, tipo = "textura") {
+	const esModelo = tipo === "modelo";
+	const proveedores = esModelo ? PROVEEDORES_MODELOS : PROVEEDORES_CATALOGO;
+	const variantes = variantesBusquedaCatalogo(keyword, tipo);
+	if (variantes.length === 0) return [];
 
-																		if (encontrados.length === 0) {
-																			continue;
-																			}
+	// Ejecuta variantes independientes en paralelo para que una búsqueda lenta no bloquee las demás.
+	const resultadosPorVariante = await Promise.all(
+		variantes.map(async (clave) => {
+			for (const proveedor of proveedores) {
+				const datos = await pedirJson(proveedor.url(clave), 9000, proveedor.headers || {});
+				const encontrados = proveedor.leer(datos);
+				if (encontrados.length > 0) {
+					const permitidos = encontrados.filter((item) => {
+						const tipoItem = String(item.tipo || "").toLowerCase();
+						if (esModelo) return !tipoItem || tipoItem.includes("modelo") || tipoItem === "model";
+						return !tipoItem || tipoItem.includes("decal") || tipoItem.includes("image");
+					});
+					if (permitidos.length > 0) {
+						return { clave, proveedor: proveedor.nombre, encontrados: permitidos };
+					}
+				}
+			}
+			return { clave, proveedor: "", encontrados: [] };
+		})
+	);
 
-																			const soloDecals = encontrados.filter(
-																				(item) => tipo === "modelo" || !item.tipo || item.tipo.toLowerCase() === "decal"
-																			);
+	const candidatos = [];
+	const vistos = new Set();
+	for (const resultado of resultadosPorVariante) {
+		for (const item of resultado.encontrados) {
+			const id = String(item.id || "").trim();
+			if (!/^\d+$/.test(id) || vistos.has(id)) continue;
+			vistos.add(id);
+			candidatos.push({
+				id,
+				nombre: String(item.nombre || "").trim(),
+				tipo: esModelo ? "Modelo" : "Decal"
+			});
+			if (candidatos.length >= MAX_CANDIDATOS_BUSQUEDA) break;
+		}
+		if (candidatos.length >= MAX_CANDIDATOS_BUSQUEDA) break;
+	}
 
-																			const utiles = (
-																				soloDecals.length > 0 ? soloDecals : encontrados
-																			)
-																			.slice(0, MAX_CANDIDATOS_BUSQUEDA);
+	if (candidatos.length > 0) {
+		const proveedoresUsados = [...new Set(resultadosPorVariante.filter((r) => r.encontrados.length > 0).map((r) => r.proveedor))];
+		console.log(
+			`[RobloxAI] 🔎 Catálogo Creator Store (${proveedoresUsados.join(", ")}): ${candidatos.length} candidatos para "${claveBusqueda(keyword)}" tras ${variantes.length} búsqueda(s).`
+		);
+		return candidatos;
+	}
 
-																			console.log(
-																				`[RobloxAI] 🔎 Catálogo Roblox (${proveedor.nombre}): ${utiles.length} candidatos para "${clave}".`
-																			);
+	console.warn(
+		`[RobloxAI] Creator Store no devolvió candidatos para "${claveBusqueda(keyword)}" tras ${variantes.length} búsqueda(s) y ${proveedores.length} proveedor(es).`
+	);
+	return [];
+}
 
-																			return utiles;
-																			}
-
-																		console.warn(
-																			`[RobloxAI] Ningún proveedor del catálogo público devolvió resultados para "${clave}".`
-																		);
-
-																		return [];
-																		}
-
-																function esperarVerificacionTexturas(
+function esperarVerificacionTexturas(
 																	requestId,
 																	timeoutMs
 																) {
@@ -1141,10 +1225,10 @@ const esperasModelos = new Map();
 
 																		if (!Array.isArray(respuesta)) {
 																			console.warn(
-																				"[RobloxAI] Studio no confirmó la validación de texturas: se descartan los resultados de la búsqueda."
+																				`[RobloxAI] TIEMPO DE ESPERA AGOTADO al validar texturas (${requestId}). Comprueba que el plugin actualizado esté conectado y que el servidor use el puerto 3000; no se marcarán candidatos como válidos.`
 																			);
-																			return [];
-																			}
+																			return null;
+																		}
 
 																			return respuesta
 																			.filter(
@@ -1185,8 +1269,8 @@ async function verificarModelosEnStudio(candidatos) {
 	});
 	const respuesta = await espera;
 	if (!Array.isArray(respuesta)) {
-		console.warn("[RobloxAI] Studio no respondió la validación de modelos; se descartan.");
-		return [];
+		console.warn(`[RobloxAI] TIEMPO DE ESPERA AGOTADO al validar modelos (${requestId}). Comprueba que el plugin esté conectado; no se marcarán candidatos como válidos.`);
+		return null;
 	}
 	return respuesta
 		.filter((item) => item && item.validado === true && normalizarIdTextura(item.id))
@@ -1352,10 +1436,15 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 																							? await verificarModelosEnStudio(candidatos.slice(0, 6))
 																							: await verificarTexturasEnStudio(candidatos);
 
-																						if (validadas.length === 0) {
-																							console.warn(`[RobloxAI] Ningún candidato de ${tipo} quedó validado en Studio; se descartan los resultados.`);
+																						if (!Array.isArray(validadas)) {
+																							console.warn(`[RobloxAI] La búsqueda de ${tipo} encontró candidatos, pero Studio no respondió a la validación. Esto no significa que todos los assets sean inválidos.`);
 																							return null;
-																							}
+																						}
+
+																						if (validadas.length === 0) {
+																							console.warn(`[RobloxAI] Studio respondió, pero ningún candidato de ${tipo} pasó la validación de carga.`);
+																							return null;
+																						}
 
 																							const ordenadas = await rankearCandidatosVisualmente(validadas, tipo, clave);
 																							const entrada = {
@@ -3854,7 +3943,7 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 							console.warn(
 								reparacion
 								? "⚠️ La respuesta de reparación no fue ejecutable. Exigiendo modificación de un objeto REAL."
-								: "⚠️ La primera respuesta no fue ejecutable. Pidiendo SOURCE completo y acciones válidas..."
+								: "⚠️ La primera respuesta VFX no fue ejecutable. Solicitando JSON válido con acciones visuales compatibles..."
 							);
 
 							const retry = [
@@ -4414,9 +4503,16 @@ async function buscarTexturasVerificadas(keyword, tipo = "textura") {
 		}
 
 		if (!result) {
-			console.warn("[RobloxAI] Revisión visual omitida: OmniRoute no devolvió acciones JSON utilizables tras un reintento. No se han generado ajustes automáticos.");
+			console.warn("[RobloxAI] Revisión visual omitida: OmniRoute no devolvió acciones JSON utilizables tras un reintento. La tanda principal de Studio se conserva; no se generaron ajustes visuales automáticos.");
 			return;
 		}
+		// La revisión es solo correctiva: no debe borrar objetos ni iniciar búsquedas/inserciones.
+		const tiposPermitidosEnRevision = new Set([
+			"create_instance", "set_property", "set_properties", "rename_instance", "move_instance"
+		]);
+		result.actions = (result.actions || []).filter((accion) =>
+			accion && tiposPermitidosEnRevision.has(String(accion.type || "").toLowerCase())
+		);
 		if (!result || result.actions.length === 0) {
 			console.log("[RobloxAI] Revisión aproximada terminada: no se justificaron más cambios.");
 			return;
