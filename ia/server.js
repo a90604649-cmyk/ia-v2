@@ -2377,7 +2377,10 @@ function normalizarAccion(
 											const packed = parsearAccionExtendidaEmpaquetada(rawAction);
 
 											if (packed) {
-												if (
+																													if (type === "set_property" && rawAction.properties && typeof rawAction.properties === "object" && !Array.isArray(rawAction.properties) && !String(rawAction.property || "").trim()) {
+																	type = "set_properties";
+																}
+if (
 													repairMode &&
 													(
 														packed.type === "create_instance" ||
@@ -2874,67 +2877,7 @@ function normalizarAccion(
 																					path,
 																					name,
 
-																					properties: normalizarPropiedadesVFX(rawAction, className, options.mensajeUsuario)
-																				};
-																		}
-
-																		if (
-																			type ===
-																			"set_property"
-																			) {
-																				const property =
-																				String(
-																					rawAction.property ||
-																					""
-																				).trim();
-
-																				if (
-																					!property ||
-																					[
-																					"Parent",
-																					"ClassName",
-																					"Source",
-																					"Archivable"
-																					].includes(
-																						property
-																					)
-																					) {
-																						return null;
-																					}
-
-																					if (
-																						repairMode &&
-																						!existeObjetoReal(
-																							path,
-																							name,
-																							className
-																						)
-																						) {
-																							console.warn(
-																								"🛑 set_property rechazado: objeto no encontrado en contexto:",
-																								`${path}/${name}`
-																							);
-
-																							return null;
-																						}
-
-																						return {
-																							type,
-																							className,
-																							path,
-																							name,
-																							property,
-																							value:
-																							rawAction.value
-																						};
-																			}
-
-																			if (
-																				type ===
-																				"set_properties"
-																				) {
-																					if (
-																						!rawAction.properties ||
+																					properties: normalizarPropiedadesVFX(rawAction, className, options.mensajeUsuario) ||
 																						typeof rawAction.properties !==
 																						"object"
 																					) {
@@ -2973,8 +2916,7 @@ function normalizarAccion(
 																					) {
 																						const newName =
 																						String(
-																							rawAction.newName ||
-																							""
+																							rawAction.newName || rawAction.new_name || rawAction.newname || rawAction.targetName || ""
 																						).trim();
 
 																						if (
@@ -3274,25 +3216,33 @@ function normalizarAccion(
 																	"CylinderMesh", "Fire", "Smoke", "Sparkles", "BillboardGui", "SurfaceGui",
 																	"Frame", "ImageLabel", "ImageButton", "UIGradient", "UICorner"
 																	]);
-																const allowedMutationsWithoutClass = new Set(["set_property", "set_properties"]);
-												if (!visualClasses.has(className)) {
-													if (className !== "" || !allowedMutationsWithoutClass.has(actionType)) return false;
-													// Allow only explicitly visual properties when a model omits className.
-													const safeProperties = new Set([
-														"Enabled", "Anchored", "CanCollide", "CanTouch", "CanQuery",
-														"Transparency", "Reflectance", "CastShadow", "Massless", "Locked",
-														"Size", "Position", "Orientation", "CFrame", "Color", "Color3",
-														"Material", "Shape", "Texture", "Face", "Rate", "Speed", "Lifetime",
-														"EmissionDirection", "SpreadAngle", "LightEmission", "LightInfluence",
-														"Brightness", "Range", "Shadows", "Width0", "Width1", "CurveSize0",
-														"CurveSize1", "Attachment0", "Attachment1", "LockedToPart",
-														"RotSpeed", "Rotation", "ZOffset", "MaxDistance"
-													]);
-													const mutationKeys = actionType === "set_property"
-														? [String(payload.property || "")]
-														: Object.keys(payload.properties && typeof payload.properties === "object" ? payload.properties : {});
-													if (mutationKeys.length === 0 || mutationKeys.some((key) => !safeProperties.has(key))) return false;
-												}
+																const allowedMutationsWithoutClass = new Set(["set_property", "set_properties", "rename_instance", "move_instance"]);
+						if (!visualClasses.has(className)) {
+							if (className !== "" || !allowedMutationsWithoutClass.has(actionType)) return false;
+							if (actionType === "set_property" || actionType === "set_properties") {
+								const safeProperties = new Set([
+									"Enabled", "Anchored", "CanCollide", "CanTouch", "CanQuery",
+									"Transparency", "Reflectance", "CastShadow", "Massless", "Locked",
+									"Size", "Position", "Orientation", "CFrame", "Color", "Color3",
+									"Material", "Shape", "Texture", "Face", "Rate", "Speed", "Lifetime",
+									"EmissionDirection", "SpreadAngle", "LightEmission", "LightInfluence",
+									"Brightness", "Range", "Shadows", "Width0", "Width1", "CurveSize0",
+									"CurveSize1", "Attachment0", "Attachment1", "LockedToPart",
+									"RotSpeed", "Rotation", "ZOffset", "MaxDistance"
+								]);
+								const mutationKeys = actionType === "set_property"
+									? [String(payload.property || "")]
+									: Object.keys(payload.properties && typeof payload.properties === "object" ? payload.properties : {});
+								if (mutationKeys.length === 0 || mutationKeys.some((key) => !safeProperties.has(key))) return false;
+							} else if (actionType === "rename_instance") {
+								const newName = String(payload.newName || payload.new_name || payload.newname || "").trim();
+								if (!String(payload.name || "").trim() || !newName || /[\\/]/.test(newName) || newName === "." || newName === "..") return false;
+							} else if (actionType === "move_instance") {
+								const targetPath = String(payload.targetPath || payload.target_path || payload.destination || payload.destinationPath || "").replaceAll("\\", "/");
+								if (!String(payload.name || "").trim() || !visualRoots.has(targetPath.split("/")[0])) return false;
+							}
+						}
+
 											const allowed = new Set([
 																		"create_instance", "set_property", "set_properties", "rename_instance", "move_instance"
 																		]);
