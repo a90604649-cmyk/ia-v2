@@ -962,7 +962,7 @@ const esperasModelos = new Map();
 												return /^\d+$/.test(limpio) ? limpio : null;
 												}
 
-												async function pedirJson(url, timeoutMs = 9000, headersExtra = {}) {
+												async function pedirJson(url, timeoutMs = 12000, headersExtra = {}) {
 	try {
 		const response = await fetch(url, {
 			headers: { Accept: "application/json", ...headersExtra },
@@ -1057,7 +1057,7 @@ const proveedorCreatorStore = (tipoEsperado) => ({
 	headers: ROBLOX_CREATOR_STORE_API_KEY
 		? { "x-api-key": ROBLOX_CREATOR_STORE_API_KEY }
 		: {},
-	leer: (datos) => idsDeCatalogoModerno(datos, tipoEsperado)
+	leer: (datos) => idsDeCatalogoModerno(datos, tipoEsperado).map((item) => ({ ...item, tipo: tipoEsperado }))
 });
 
 const PROVEEDORES_CATALOGO = [
@@ -1154,7 +1154,9 @@ async function buscarEnCatalogoRoblox(keyword, tipo = "textura") {
 
 	const candidatos = [];
 	const vistos = new Set();
+	const maxPorVariante = Math.max(2, Math.ceil(MAX_CANDIDATOS_BUSQUEDA / variantes.length));
 	for (const resultado of resultadosPorVariante) {
+		let agregadosDeEstaVariante = 0;
 		for (const item of resultado.encontrados) {
 			const id = String(item.id || "").trim();
 			if (!/^\d+$/.test(id) || vistos.has(id)) continue;
@@ -1164,7 +1166,8 @@ async function buscarEnCatalogoRoblox(keyword, tipo = "textura") {
 				nombre: String(item.nombre || "").trim(),
 				tipo: esModelo ? "Modelo" : "Decal"
 			});
-			if (candidatos.length >= MAX_CANDIDATOS_BUSQUEDA) break;
+			agregadosDeEstaVariante += 1;
+			if (agregadosDeEstaVariante >= maxPorVariante || candidatos.length >= MAX_CANDIDATOS_BUSQUEDA) break;
 		}
 		if (candidatos.length >= MAX_CANDIDATOS_BUSQUEDA) break;
 	}
@@ -1304,13 +1307,49 @@ async function obtenerMiniaturaCatalogo(assetId) {
 	}
 }
 
+function ordenarModelosPorRelevanciaTextual(candidatos, keyword = "") {
+	const normalizar = (valor) => String(valor || "")
+		.normalize("NFD")
+		.replace(/[\u0300-\u036f]/g, "")
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, " ")
+		.trim();
+	const ignorar = new Set([
+		"vfx", "pfx", "effect", "effects", "model", "models", "modelo", "modelos",
+		"asset", "assets", "roblox", "decal", "texture", "textures", "particle",
+		"particles", "visual", "with", "from", "the", "and", "for", "of", "to",
+		"de", "del", "para", "con", "una", "uno", "unos", "unas", "las", "los"
+	]);
+	const tokens = [...new Set(normalizar(keyword).split(" ").filter((token) =>
+		token.length >= 3 && !ignorar.has(token)
+	))];
+	if (tokens.length === 0) {
+		console.warn("[RobloxAI] No se puede ordenar modelos sin términos de búsqueda concretos.");
+		return [];
+	}
+
+	const puntuados = candidatos.map((item, indice) => {
+		const nombre = normalizar(item.nombre);
+		const score = tokens.reduce((total, token) => total + (nombre.includes(token) ? 1 : 0), 0);
+		return { item, indice, score };
+	});
+	const mejores = puntuados.filter((entrada) => entrada.score > 0)
+		.sort((a, b) => b.score - a.score || a.indice - b.indice)
+		.map((entrada) => entrada.item);
+
+	if (mejores.length === 0) {
+		console.warn(`[RobloxAI] No se insertará un modelo sin similitud textual con la búsqueda "${keyword}"; se usará la alternativa de geometría VFX.`);
+	}
+	return mejores;
+}
+
 async function rankearCandidatosVisualmente(candidatos, tipo = "textura", keyword = "") {
 	if (!Array.isArray(candidatos) || candidatos.length === 0) return [];
 	if (candidatos.length < 2 && tipo !== "modelo") return candidatos;
 	const referencia = referenciaVisualActual;
 	if (!referencia || !String(process.env.NVIDIA_API_KEY || "").trim()) {
 		console.log("[RobloxAI] Ranking visual de catálogo omitido: falta imagen de referencia o NVIDIA_API_KEY.");
-		return tipo === "modelo" ? [] : candidatos;
+		return tipo === "modelo" ? ordenarModelosPorRelevanciaTextual(candidatos, keyword) : candidatos;
 	}
 
 	// Limita las miniaturas para no saturar memoria/red ni el contexto multimodal.
@@ -1322,7 +1361,7 @@ async function rankearCandidatosVisualmente(candidatos, tipo = "textura", keywor
 	const disponibles = miniaturas.filter((x) => x.miniatura);
 	if (disponibles.length === 0 || (disponibles.length < 2 && tipo !== "modelo")) {
 		console.warn("[RobloxAI] No hubo suficientes miniaturas del catálogo para una comparación visual fiable.");
-		return tipo === "modelo" ? [] : candidatos;
+		return tipo === "modelo" ? ordenarModelosPorRelevanciaTextual(candidatos, keyword) : candidatos;
 	}
 
 	const contenido = [
@@ -1355,20 +1394,20 @@ async function rankearCandidatosVisualmente(candidatos, tipo = "textura", keywor
 	} catch (primaryError) {
 		if (!NVIDIA_VISION_FALLBACK_MODEL || NVIDIA_VISION_FALLBACK_MODEL === NVIDIA_VISION_MODEL) {
 			console.warn("[RobloxAI] Ranking visual falló.", primaryError instanceof Error ? primaryError.message : String(primaryError));
-			return tipo === "modelo" ? [] : candidatos;
+			return tipo === "modelo" ? ordenarModelosPorRelevanciaTextual(candidatos, keyword) : candidatos;
 		}
 		try {
 			respuesta = await preguntarNvidiaVisionConReintento(mensajes, NVIDIA_VISION_FALLBACK_MODEL);
 		} catch (fallbackError) {
 			console.warn("[RobloxAI] Ranking visual y respaldo fallaron.", fallbackError instanceof Error ? fallbackError.message : String(fallbackError));
-			return tipo === "modelo" ? [] : candidatos;
+			return tipo === "modelo" ? ordenarModelosPorRelevanciaTextual(candidatos, keyword) : candidatos;
 		}
 	}
 
 	try {
 		const limpio = String(respuesta || "").trim().replace(/^\uFEFF/, "").replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "");
 		const json = limpio.match(/\{[\s\S]*\}/);
-		if (!json) return tipo === "modelo" ? [] : candidatos;
+		if (!json) return tipo === "modelo" ? ordenarModelosPorRelevanciaTextual(candidatos, keyword) : candidatos;
 		const parsed = JSON.parse(json[0]);
 		const byId = new Map(candidatos.map((item) => [String(item.id), item]));
 		const ordenados = [];
@@ -1386,7 +1425,7 @@ async function rankearCandidatosVisualmente(candidatos, tipo = "textura", keywor
 					ordenados.push(byId.get(id));
 				}
 			});
-		if (!ordenados.length) return tipo === "modelo" ? [] : candidatos;
+		if (!ordenados.length) return tipo === "modelo" ? ordenarModelosPorRelevanciaTextual(candidatos, keyword) : candidatos;
 		const mejorPuntuacion = puntuaciones.get(String(ordenados[0].id));
 		if (tipo === "modelo" && Number.isFinite(mejorPuntuacion) && mejorPuntuacion < 35) {
 			console.warn(`[RobloxAI] Ninguna miniatura de modelo pareció suficientemente similar a la referencia (mejor puntuación ${mejorPuntuacion}/100); no se insertará un modelo potencialmente irrelevante.`);
@@ -1400,7 +1439,7 @@ async function rankearCandidatosVisualmente(candidatos, tipo = "textura", keywor
 		return ordenados;
 	} catch (error) {
 		console.warn("[RobloxAI] La respuesta del ranking visual no era JSON válido.", error instanceof Error ? error.message : String(error));
-		return tipo === "modelo" ? [] : candidatos;
+		return tipo === "modelo" ? ordenarModelosPorRelevanciaTextual(candidatos, keyword) : candidatos;
 	}
 }
 
