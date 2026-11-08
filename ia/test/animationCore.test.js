@@ -42,6 +42,29 @@ test("still rejects excessive RootJoint translation", () => {
     ), /RootJoint.y/);
 });
 
+test("accepts a live action for one R6 joint", () => {
+    const result = parseAnimationLine(
+        '{"type":"joint","time":0.25,"joint":"Right Shoulder","pose":{"x":0,"y":0,"z":0,"rx":0,"ry":0,"rz":-45}}',
+        "preview"
+    );
+    assert.equal(result.type, "joint");
+    assert.equal(result.joint, "Right Shoulder");
+    assert.equal(result.pose.rz, -45);
+});
+
+test("rejects a live action for a non-R6 joint", () => {
+    assert.throws(() => parseAnimationLine(
+        '{"type":"joint","time":0.25,"joint":"Right Elbow","pose":{"x":0,"y":0,"z":0,"rx":0,"ry":0,"rz":0}}',
+        "preview"
+    ), /Articulación R6 no válida/);
+});
+
+test("accepts a frame boundary marker", () => {
+    const result = parseAnimationLine('{"type":"frame","time":0.5}', "preview");
+    assert.equal(result.type, "frame");
+    assert.equal(result.time, 0.5);
+});
+
 test("rejects a keyframe that omits an R6 joint", () => {
     const joints = Object.fromEntries(
         R6_JOINTS.slice(0, 5).map((name) => [
@@ -91,4 +114,6 @@ test("preview prompt contains the user's description and forbids the final 20 pe
     const prompt = buildPreviewPrompt("The character waves slowly", { rigType: "R6" });
     assert.match(prompt, /The character waves slowly/);
     assert.match(prompt, /No emitas el 20% final/);
+    assert.match(prompt, /"type":"joint"/);
+    assert.match(prompt, /"type":"frame"/);
 });
