@@ -164,7 +164,7 @@ approveButton.Visible = false
 local cancelButton = makeButton("Cancelar", Color3.fromRGB(150, 62, 62))
 cancelButton.Visible = false
 
-local footer = makeLabel("Vista previa en el viewport · Secuencia editable en ServerStorage/R6LiveAnimations", 38, Color3.fromRGB(135, 143, 156), false)
+local footer = makeLabel("Vista previa directa en el viewport · Clips vinculados al rig mediante AnimSaves", 38, Color3.fromRGB(135, 143, 156), false)
 
 local sessionId = nil
 local running = false
@@ -172,6 +172,7 @@ local awaitingApproval = false
 local lastSequence = 0
 local currentRig = nil
 local currentMotors = {}
+local currentBaseC0 = {}
 local lastFrameTime = nil
 local currentSequence = nil
 local keyframeCount = 0
@@ -347,8 +348,30 @@ local function makePose(parent, name, cframe)
     return pose
 end
 
+local function linkAnimationFolderToRig(folder)
+    if not currentRig or not currentRig.Parent then
+        return
+    end
+
+    local reference = currentRig:FindFirstChild("AnimSaves")
+    if reference and not reference:IsA("ObjectValue") then
+        log("El objeto AnimSaves del rig no es ObjectValue; no se puede enlazar la carpeta de clips.")
+        return
+    end
+
+    if not reference then
+        reference = Instance.new("ObjectValue")
+        reference.Name = "AnimSaves"
+        reference.Parent = currentRig
+    end
+
+    reference.Value = folder
+    log("Carpeta de animaciones enlazada al rig mediante AnimSaves.")
+end
+
 local function createSequence(name)
     local folder = getAnimationFolder()
+    linkAnimationFolderToRig(folder)
     local sequence = Instance.new("KeyframeSequence")
     sequence.Name = (name or "R6_AI_Animation"):gsub("[^%w_%-]", "_")
     sequence.Loop = false
@@ -400,8 +423,9 @@ local function applyLiveJointAction(action)
         return
     end
 
-    local target = toCFrame(action.pose)
-    local changed = motor.Transform ~= target
+    local baseC0 = currentBaseC0[jointName] or motor.C0
+    local target = baseC0 * toCFrame(action.pose)
+    local changed = motor.C0 ~= target
 
     if changed then
         statusLabel.Text = "IA moviendo: " .. partName .. " (" .. jointName .. ")…"
@@ -409,7 +433,7 @@ local function applyLiveJointAction(action)
             return TweenService:Create(
                 motor,
                 TweenInfo.new(JOINT_STEP_SECONDS, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
-                { Transform = target }
+                { C0 = target }
             )
         end)
 
@@ -424,12 +448,12 @@ local function applyLiveJointAction(action)
             end
             if not played then
                 pcall(function() tween:Cancel() end)
-                motor.Transform = target
-                log("Tween no disponible; pose aplicada directamente a " .. partName)
+                motor.C0 = target
+                log("Tween no disponible; pose C0 aplicada directamente a " .. partName)
             end
         else
-            motor.Transform = target
-            log("Tween no disponible; pose aplicada directamente a " .. partName)
+            motor.C0 = target
+            log("Tween no disponible; pose C0 aplicada directamente a " .. partName)
         end
 
         log(string.format("IA movió %s en t=%.2fs", partName, tonumber(action.time) or 0))
@@ -670,6 +694,10 @@ local function beginAnimation()
 
     currentRig = rig
     currentMotors = motors
+    currentBaseC0 = {}
+    for _, jointName in ipairs(JOINTS) do
+        currentBaseC0[jointName] = motors[jointName].C0
+    end
     log("Dummy R6 validado: " .. rig:GetFullName() .. " (6 articulaciones).")
     selectedRigLabel.Text = "Rig: " .. rig.Name .. " (R6)"
     lastFrameTime = nil
