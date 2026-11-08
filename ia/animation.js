@@ -87,8 +87,8 @@ export async function generatePreview(session) {
         }
     }
 
-    if (!meta || receivedFrames < 4) {
-        throw new Error("Gemini no generó suficientes keyframes válidos para la vista previa.");
+    if (!meta || receivedFrames < Math.ceil(meta.previewFrames * 0.8)) {
+        throw new Error("Gemini no generó al menos el 80% de los keyframes previstos para la vista previa.");
     }
 
     session.meta = meta;
