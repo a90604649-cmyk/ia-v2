@@ -57,6 +57,39 @@ export function parseAnimationLine(rawLine, stage) {
         };
     }
 
+    if (data.type === "joint") {
+        const time = clampNumber(data.time, 0, MAX_DURATION_SECONDS, "time");
+        const joint = String(data.joint || "");
+        if (!R6_JOINTS.includes(joint)) {
+            throw new Error(`Articulación R6 no válida: ${joint}`);
+        }
+        if (!data.pose || typeof data.pose !== "object") {
+            throw new Error(`Acción de ${joint} sin objeto pose.`);
+        }
+
+        const pose = {};
+        for (const field of NUMBER_FIELDS) {
+            const max = field === "x" || field === "y" || field === "z"
+                ? (joint === "RootJoint" ? 4 : 0.25)
+                : 180;
+            pose[field] = clampNumber(
+                data.pose[field] ?? 0,
+                -max,
+                max,
+                `${joint}.${field}`
+            );
+        }
+
+        return { type: "joint", time, joint, pose };
+    }
+
+    if (data.type === "frame") {
+        return {
+            type: "frame",
+            time: clampNumber(data.time, 0, MAX_DURATION_SECONDS, "time")
+        };
+    }
+
     if (data.type === "keyframe") {
         const time = clampNumber(data.time, 0, MAX_DURATION_SECONDS, "time");
         if (!data.joints || typeof data.joints !== "object") {
@@ -105,15 +138,18 @@ export function buildPreviewPrompt(description, rig) {
         JSON.stringify(rig),
         "",
         "REQUISITOS:",
-        "- Planifica el movimiento completo antes de emitir los keyframes.",
+        "- Trabaja de forma incremental: emite la primera acción válida en cuanto la decidas; no esperes a tener toda la animación escrita.",
         "- La animación final tendrá una duración entre 0.5 y 30 segundos.",
         "- El primer pase debe cubrir desde t=0 hasta aproximadamente el 80% de la duración.",
         "- Emite entre 8 y 32 keyframes para este primer pase, según la complejidad.",
         "- Los tiempos deben ser crecientes y representar momentos significativos, no fotogramas aleatorios.",
         "- El primer objeto debe ser: {\"type\":\"meta\",\"name\":\"...\",\"duration\":4,\"previewFrames\":16,\"looped\":false}",
-        "- Después emite un objeto por línea: {\"type\":\"keyframe\",\"time\":0.25,\"joints\":{...}}",
-        "- joints debe contener exactamente estas seis claves: RootJoint, Neck, Left Shoulder, Right Shoulder, Left Hip, Right Hip.",
-        "- Cada articulación contiene x,y,z,rx,ry,rz numéricos.",
+        "- Para el primer tiempo (t=0), emite seis acciones joint, una por articulación, para definir la pose inicial completa.",
+        "- Para cada tiempo posterior, emite una acción joint separada por cada articulación que cambie; no emitas articulaciones que mantengan exactamente la pose anterior.",
+        "- Una acción tiene este formato: {\"type\":\"joint\",\"time\":0.25,\"joint\":\"Right Shoulder\",\"pose\":{\"x\":0,\"y\":0,\"z\":0,\"rx\":0,\"ry\":0,\"rz\":-45}}.",
+        "- Inmediatamente después de las acciones de cada tiempo, emite {\"type\":\"frame\",\"time\":0.25} para cerrar y guardar ese keyframe. No cambies de tiempo antes de cerrarlo.",
+        "- Usa exactamente estos nombres de articulación: RootJoint, Neck, Left Shoulder, Right Shoulder, Left Hip, Right Hip.",
+        "- Cada acción joint debe contener x,y,z,rx,ry,rz numéricos.",
         "- Crea una pose inicial clara en t=0 y una pose que deje la acción preparada para terminar en el 80%.",
         "- No emitas el 20% final. Se generará después de la aprobación humana.",
         "- No devuelvas el objeto complete en esta fase.",
@@ -143,8 +179,8 @@ export function buildFinishPrompt(description, rig, session) {
         "- Genera el 20% final con seguimiento, recuperación y una pose final coherente.",
         "- Conserva la intención, ritmo y estilo del 80% aprobado.",
         "- Puedes añadir ajustes muy pequeños a los últimos keyframes existentes solo si son necesarios para una transición suave, pero no cambies el sentido del movimiento aprobado.",
-        "- Emite primero los nuevos keyframes con tiempos superiores al último keyframe aprobado.",
-        "- Cada keyframe debe incluir las seis articulaciones y x,y,z,rx,ry,rz.",
+        "- Emite acciones joint incrementales, usando tiempos superiores al último keyframe aprobado.",
+        "- Para cada tiempo, emite una acción joint por cada articulación que cambie respecto al último frame y después cierra el tiempo con {\"type\":\"frame\",\"time\":...}. Las articulaciones no mencionadas conservan su pose anterior.",
         "- Termina con una línea: {\"type\":\"complete\"}.",
         "",
         "FORMATO NDJSON ÚNICAMENTE. SIN TEXTO EXPLICATIVO NI MARKDOWN."
