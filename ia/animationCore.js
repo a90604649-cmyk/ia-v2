@@ -3,7 +3,7 @@ import {
     MAX_DURATION_SECONDS,
     MIN_DURATION_SECONDS,
     MAX_KEYFRAMES,
-    PREVIEW_PROGRESS
+    MAX_PREVIEW_KEYFRAMES
 } from "./animationConfig.js";
 import { R6_JOINTS } from "./r6.js";
 
@@ -44,8 +44,8 @@ export function parseAnimationLine(rawLine, stage) {
 
         const previewFrames = Math.round(clampNumber(
             data.previewFrames,
-            4,
-            MAX_KEYFRAMES,
+            8,
+            MAX_PREVIEW_KEYFRAMES,
             "previewFrames"
         ));
 
@@ -157,4 +157,3 @@ export function getPreviewProgress(frameCount, expectedFrames) {
     return Math.min(79, 15 + Math.floor((frameCount / expectedFrames) * 64));
 }
 
-export const APPROVAL_PROGRESS = PREVIEW_PROGRESS;
