@@ -1,22 +1,24 @@
 # R6 Live Animator
 
-Animador de IA para Roblox Studio. El dummy R6 seleccionado es el espacio de trabajo: la IA genera poses/keyframes de forma incremental y el plugin los aplica al rig mientras llegan. No crea primero un archivo terminado para importarlo al final.
+Animador de IA para Roblox Studio. La IA envía acciones de articulación en streaming y el plugin mueve los Dummys seleccionados mientras construye sus clips.
 
 ## Comportamiento
 
-1. Seleccionar un Model R6 en Roblox Studio.
-2. Escribir una descripción de movimiento en el panel del plugin.
-3. El plugin inspecciona las seis articulaciones R6 y las dimensiones/transformaciones de las partes.
-4. Antigravity transmite fragmentos de texto al servidor local mediante Interactions API.
-5. El servidor convierte esos fragmentos en mensajes NDJSON de keyframes; el plugin aplica cada keyframe al dummy y actualiza una `KeyframeSequence` incrementalmente.
-6. En el 80%, el sistema se detiene y espera la aprobación.
-7. Al aprobar, Antigravity genera el tramo final y termina la secuencia.
+1. Selecciona uno o dos Models R6 en Roblox Studio. Para dos, selecciónalos juntos en Explorer usando Ctrl.
+2. Escribe qué debe ocurrir. Describe el papel de cada Dummy cuando haya dos.
+3. El plugin inspecciona los rigs y los envía en una sola solicitud.
+4. Antigravity genera una línea de tiempo completa, con los mismos tiempos para ambos rigs.
+5. El plugin espera a tener el frame de cada Dummy para un mismo instante y luego inicia sus movimientos simultáneamente.
+6. Cada rig recibe un `KeyframeSequence` dentro de su propio `Model/AnimSaves`. Moon Animator 2 usa esta estructura de clips por rig; los dos clips comparten las mismas marcas de tiempo para mantener la sincronía.
+7. La generación llega al 100% sin pausa ni aprobación intermedia. El botón Cancelar sigue disponible durante la generación.
+
+La integración usa el formato `KeyframeSequence` y la carpeta `AnimSaves` de los rigs, no la API interna no oficial de Moon Animator. Por ello crea clips compatibles por rig, con tiempo sincronizado; no intenta manipular ventanas ni controles privados del timeline de Moon Animator.
 
 ## Requisitos
 
 - Node.js 18 o superior.
 - Una clave de Google AI Studio con acceso a Interactions API y al agente Antigravity configurado.
-- El plugin de Studio debe permitir comunicación HTTP con el puente local `http://127.0.0.1:3000`; consulta el servidor cada 300 ms.
+- El plugin de Studio debe permitir comunicación HTTP con el puente local `http://127.0.0.1:3000`.
 
 ## Configuración local
 
@@ -41,23 +43,36 @@ Instala y ejecuta:
 
 ```powershell
 npm install
+npm test
 npm start
 ```
 
 ## Instalar el plugin
 
-Carga `ia/RobloxAIBridgePlugin.lua` como plugin local de Roblox Studio. Selecciona el dummy R6 y abre **R6 Live Animator** desde la barra de herramientas.
+Carga `ia/RobloxAIBridgePlugin.lua` como plugin local de Roblox Studio. Selecciona uno o dos Dummys R6 y abre **R6 Live Animator** desde la barra de herramientas.
 
-## Estado de esta versión
+## Clips de Moon Animator 2
 
-Se ha probado la conexión de Interactions API y la recepción de eventos SSE de Antigravity, incluyendo `step.delta` y `interaction.completed`. La integración con el protocolo NDJSON del animador y la comprobación real de movimiento en viewport, creación incremental de `KeyframeSequence` y pausa al 80% todavía deben validarse en Roblox Studio antes de considerar la versión estable.
+Al terminar, revisa en Explorer cada Dummy:
+
+```
+DummyA
+└── AnimSaves
+    └── NombreDeAnimacion_DummyA (KeyframeSequence)
+
+DummyB
+└── AnimSaves
+    └── NombreDeAnimacion_DummyB (KeyframeSequence)
+```
+
+Los clips de ambos rigs reciben los mismos tiempos. Moon Animator guarda y reconoce secuencias `KeyframeSequence` dentro de `AnimSaves` en el rig. Para editar los dos en un mismo proyecto, abre Moon Animator y carga los dos rigs/clips en esa sesión; la integración actual prepara y sincroniza los clips, pero no llama a su API interna privada.
 
 ## Estructura
 
-- `ia/RobloxAIBridgePlugin.lua` — interfaz de Studio, inspección R6 y aplicación de keyframes en vivo.
+- `ia/RobloxAIBridgePlugin.lua` — selección de uno o dos rigs, vista previa simultánea y guardado de clips.
 - `ia/server.js` — API local y sesiones de animación.
 - `ia/modelProvider.js` — conexión segura con Antigravity Interactions API y lectura de streaming SSE.
-- `ia/animation.js` — fases de vista previa y acabado tras aprobación.
-- `ia/animationCore.js` — prompts NDJSON, validación y progreso.
+- `ia/animation.js` — generación de toda la línea de tiempo con cierres sincronizados por rig.
+- `ia/animationCore.js` — protocolo NDJSON, prompts y validación de poses.
 - `ia/animationConfig.js` — reglas de animación R6.
-- `ia/r6.js` — validación de rig R6.
+- `ia/r6.js` — validación de rigs R6.
