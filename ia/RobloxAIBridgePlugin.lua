@@ -385,6 +385,7 @@ local function addSequenceKeyframe(data)
 end
 
 local JOINT_STEP_SECONDS = 0.14
+local resetSessionUi
 
 local function applyLiveJointAction(action)
     if not currentRig or not currentRig.Parent then
@@ -474,7 +475,7 @@ local function cancelActiveTweens()
     activeTweens = {}
 end
 
-local function resetSessionUi()
+resetSessionUi = function()
     running = false
     awaitingApproval = false
     sessionId = nil
