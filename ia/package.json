@@ -2,7 +2,7 @@
   "name": "r6-live-animator",
   "version": "0.1.0",
   "private": true,
-  "description": "Live R6 animation agent for Roblox Studio, streamed from Gemini",
+  "description": "Synchronized live R6 animation agent for Roblox Studio and Moon Animator clips",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
