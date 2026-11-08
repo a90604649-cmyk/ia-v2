@@ -325,16 +325,28 @@ local function toCFrame(pose)
 end
 
 local function getAnimationFolder()
-    if animationFolder and animationFolder.Parent then
+    local reference = currentRig and currentRig:FindFirstChild("AnimSaves")
+    if reference and reference:IsA("ObjectValue") then
+        local savedFolder = reference.Value
+        if savedFolder and savedFolder:IsA("Folder") and savedFolder.Parent == ServerStorage then
+            animationFolder = savedFolder
+            return animationFolder
+        end
+    end
+
+    local rigName = currentRig and currentRig.Name or "UnknownRig"
+    local safeRigName = rigName:gsub("[^%w_%-]", "_")
+    local folderName = "R6LiveAnimations_" .. safeRigName
+    local existing = ServerStorage:FindFirstChild(folderName)
+
+    if existing and existing:IsA("Folder") then
+        animationFolder = existing
         return animationFolder
     end
 
-    animationFolder = ServerStorage:FindFirstChild("R6LiveAnimations")
-    if not animationFolder then
-        animationFolder = Instance.new("Folder")
-        animationFolder.Name = "R6LiveAnimations"
-        animationFolder.Parent = ServerStorage
-    end
+    animationFolder = Instance.new("Folder")
+    animationFolder.Name = folderName
+    animationFolder.Parent = ServerStorage
     return animationFolder
 end
 
@@ -521,6 +533,19 @@ local function cancelActiveTweens()
     activeTweens = {}
 end
 
+local function restoreRigBaseC0()
+    for _, jointName in ipairs(JOINTS) do
+        local motor = currentMotors[jointName]
+        local baseC0 = currentBaseC0[jointName]
+        if motor and baseC0 then
+            pcall(function()
+                motor.C0 = baseC0
+            end)
+        end
+    end
+    currentBaseC0 = {}
+end
+
 resetSessionUi = function()
     running = false
     awaitingApproval = false
@@ -529,6 +554,7 @@ resetSessionUi = function()
     checkpointReceived = false
     completionReceived = false
     cancelActiveTweens()
+    restoreRigBaseC0()
     startButton.Active = not liveFrameRunner
     startButton.AutoButtonColor = not liveFrameRunner
     approveButton.Visible = false
