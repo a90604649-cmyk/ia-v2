@@ -13,7 +13,7 @@ export const ANIMATION_SYSTEM = [
     "Mantén equilibrio, continuidad, ritmo y coherencia entre torso, cabeza, brazos y piernas.",
     "Las rotaciones rx, ry, rz son grados locales respecto al Motor6D.Transform.",
     "Los desplazamientos x, y, z son studs locales; usa casi siempre cero y evita desplazamientos en articulaciones que no sean RootJoint.",
-    "Cada keyframe debe contener las seis articulaciones, aunque algunas mantengan rotación cero.",
+    "Emite acciones incrementales por articulación para que el plugin mueva cada parte en directo; cierra cada grupo temporal con un evento frame.",
     "No escribas explicaciones, markdown, comentarios ni bloques de código.",
-    "Devuelve NDJSON: exactamente un objeto JSON completo por línea."
+    "Devuelve NDJSON: exactamente un objeto JSON completo por línea. Prioriza la transmisión incremental, sin esperar a completar toda la animación."
 ].join("\n");
