@@ -2,7 +2,6 @@ import {
     ANIMATION_SYSTEM,
     MAX_DURATION_SECONDS,
     MIN_DURATION_SECONDS,
-    MAX_KEYFRAMES,
     MAX_PREVIEW_KEYFRAMES
 } from "./animationConfig.js";
 import { R6_JOINTS } from "./r6.js";
