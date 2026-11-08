@@ -405,17 +405,33 @@ local function applyLiveJointAction(action)
 
     if changed then
         statusLabel.Text = "IA moviendo: " .. partName .. " (" .. jointName .. ")…"
-        local tween = TweenService:Create(
-            motor,
-            TweenInfo.new(JOINT_STEP_SECONDS, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
-            { Transform = target }
-        )
-        activeTweens[jointName] = tween
-        tween:Play()
-        tween.Completed:Wait()
-        if activeTweens[jointName] == tween then
-            activeTweens[jointName] = nil
+        local created, tween = pcall(function()
+            return TweenService:Create(
+                motor,
+                TweenInfo.new(JOINT_STEP_SECONDS, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+                { Transform = target }
+            )
+        end)
+
+        if created and tween then
+            activeTweens[jointName] = tween
+            local played = pcall(function()
+                tween:Play()
+                tween.Completed:Wait()
+            end)
+            if activeTweens[jointName] == tween then
+                activeTweens[jointName] = nil
+            end
+            if not played then
+                pcall(function() tween:Cancel() end)
+                motor.Transform = target
+                log("Tween no disponible; pose aplicada directamente a " .. partName)
+            end
+        else
+            motor.Transform = target
+            log("Tween no disponible; pose aplicada directamente a " .. partName)
         end
+
         log(string.format("IA movió %s en t=%.2fs", partName, tonumber(action.time) or 0))
     else
         statusLabel.Text = "IA mantiene: " .. partName .. " (" .. jointName .. ")"
@@ -446,7 +462,10 @@ local function queueLiveJointAction(action)
     task.spawn(function()
         while running and #liveFrameQueue > 0 do
             local nextAction = table.remove(liveFrameQueue, 1)
-            applyLiveJointAction(nextAction)
+            local ok, actionError = pcall(applyLiveJointAction, nextAction)
+            if not ok then
+                log("ERROR aplicando movimiento " .. tostring(nextAction.joint) .. ": " .. tostring(actionError))
+            end
         end
 
         liveFrameRunner = false
