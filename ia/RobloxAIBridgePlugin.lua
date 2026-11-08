@@ -424,6 +424,10 @@ local function queueLiveKeyframe(data)
         end
 
         liveFrameRunner = false
+        if not running then
+            startButton.Active = true
+            startButton.AutoButtonColor = true
+        end
         updateCheckpointAndCompletion()
     end)
 end
@@ -442,9 +446,11 @@ local function resetSessionUi()
     awaitingApproval = false
     sessionId = nil
     liveFrameQueue = {}
+    checkpointReceived = false
+    completionReceived = false
     cancelActiveTweens()
-    startButton.Active = true
-    startButton.AutoButtonColor = true
+    startButton.Active = not liveFrameRunner
+    startButton.AutoButtonColor = not liveFrameRunner
     approveButton.Visible = false
     cancelButton.Visible = false
 end
