@@ -1,289 +1,160 @@
-import fs from "fs/promises";
-import path from "path";
-import { preguntarGroq, parsearRespuestaJson } from "./groq.js";
 import {
-    ANIMATION_MODEL,
-    MEMORY_FILE_PARTS,
-    R6_PARTS,
-    R6_JOINTS,
-    R6_RIG_NAME,
-    R6_RIG_TYPE,
-    R6_RIG_PATH,
-    ANIMATION_SYSTEM
+    ANIMATION_SYSTEM,
+    MAX_DURATION_SECONDS,
+    MIN_DURATION_SECONDS,
+    MAX_KEYFRAMES,
+    PREVIEW_PROGRESS
 } from "./animationConfig.js";
+import { R6_JOINTS } from "./r6.js";
 
-const MEMORY_FILE = path.join(process.cwd(), ...MEMORY_FILE_PARTS);
+const NUMBER_FIELDS = ["x", "y", "z", "rx", "ry", "rz"];
 
-async function cargarMemoria() {
+function clampNumber(value, min, max, label) {
+    const number = Number(value);
+    if (!Number.isFinite(number) || number < min || number > max) {
+        throw new Error(`Valor inválido en ${label}: ${String(value)}`);
+    }
+    return number;
+}
+
+export function parseAnimationLine(rawLine, stage) {
+    const line = String(rawLine || "").trim();
+    if (!line || line.startsWith("```")) return null;
+
+    let data;
     try {
-        await fs.mkdir(path.dirname(MEMORY_FILE), { recursive: true });
+        data = JSON.parse(line);
+    } catch {
+        return null;
+    }
 
-        try {
-            await fs.access(MEMORY_FILE);
-        } catch {
-            await fs.writeFile(
-                MEMORY_FILE,
-                JSON.stringify({ references: [] }, null, 4),
-                "utf8"
-            );
-        }
+    if (!data || typeof data !== "object" || typeof data.type !== "string") {
+        return null;
+    }
 
-        const contenido = await fs.readFile(MEMORY_FILE, "utf8");
-        const memoria = JSON.parse(contenido);
+    if (data.type === "meta") {
+        if (stage !== "preview") return null;
 
-        return memoria && Array.isArray(memoria.references)
-            ? memoria
-            : { references: [] };
-    } catch (error) {
-        console.error(
-            "❌ No se pudo cargar la memoria de animaciones:",
-            error instanceof Error ? error.message : String(error)
+        const duration = clampNumber(
+            data.duration,
+            MIN_DURATION_SECONDS,
+            MAX_DURATION_SECONDS,
+            "duration"
         );
-        return { references: [] };
-    }
-}
 
-function resumirReferencia(referencia) {
-    const partes = [];
+        const previewFrames = Math.round(clampNumber(
+            data.previewFrames,
+            4,
+            MAX_KEYFRAMES,
+            "previewFrames"
+        ));
 
-    partes.push("REFERENCIA DE APRENDIZAJE:");
-    partes.push(`Nombre: ${String(referencia?.name || "Sin nombre")}`);
-    partes.push(`Tipo de rig: R6`);
-    partes.push(`Duración aproximada: ${Number(referencia?.duration || 0).toFixed(2)} segundos`);
-    partes.push(`Cantidad de keyframes: ${Number(referencia?.keyframeCount || 0)}`);
-
-    if (referencia?.note) {
-        partes.push(`Observación: ${String(referencia.note)}`);
-    }
-
-    if (referencia?.parts && typeof referencia.parts === "object") {
-        partes.push("Características por parte:");
-        for (const parte of Object.keys(referencia.parts)) {
-            const datos = referencia.parts[parte] || {};
-            partes.push(
-                `- ${parte}: rotX=${Number(datos.rotacionX || 0).toFixed(1)}°, ` +
-                `rotY=${Number(datos.rotacionY || 0).toFixed(1)}°, ` +
-                `rotZ=${Number(datos.rotacionZ || 0).toFixed(1)}°, ` +
-                `desplazamiento=(${Number(datos.desplazamientoX || 0).toFixed(2)}, ` +
-                `${Number(datos.desplazamientoY || 0).toFixed(2)}, ` +
-                `${Number(datos.desplazamientoZ || 0).toFixed(2)})`
-            );
-        }
+        return {
+            type: "meta",
+            name: String(data.name || "R6 AI Animation").slice(0, 80),
+            duration,
+            previewFrames,
+            looped: Boolean(data.looped)
+        };
     }
 
-    return partes.join("\n");
-}
-
-async function crearContextoMemoria() {
-    const memoria = await cargarMemoria();
-    if (!memoria.references.length) return "";
-
-    return [
-        "MEMORIA DE ANIMACIÓN:",
-        "Las siguientes animaciones son únicamente REFERENCIAS DE ESTILO.",
-        "No copies sus keyframes ni sus poses literalmente.",
-        "Extrae solamente patrones generales de movimiento, coordinación y calidad.",
-        "",
-        ...memoria.references.slice(-8).map(resumirReferencia)
-    ].join("\n\n");
-}
-
-function obtenerTextoHistorial(mensaje) {
-    if (!mensaje) return "";
-    if (typeof mensaje.text === "string") return mensaje.text;
-    if (Array.isArray(mensaje.parts)) {
-        return mensaje.parts.map((parte) => parte?.text || "").join(" ");
-    }
-    return "";
-}
-
-function crearContextoConversacion(historial) {
-    if (!Array.isArray(historial)) return "";
-
-    return historial
-        .slice(-8)
-        .map((mensaje) => {
-            const rol = mensaje?.role === "user" ? "Usuario" : "Asistente";
-            return `${rol}: ${obtenerTextoHistorial(mensaje)}`;
-        })
-        .join("\n");
-}
-
-async function crearPrompt(mensajeUsuario, historial, r6Calibration) {
-    const memoria = await crearContextoMemoria();
-    const conversacion = crearContextoConversacion(historial);
-    const calibracion = r6Calibration
-        ? [
-            "CALIBRACIÓN R6 REAL RECIBIDA:",
-            `Rig: ${r6Calibration.rigName || R6_RIG_NAME}`,
-            `Joints calibrados: ${Object.keys(r6Calibration.joints || {}).length}`,
-            `Frente: ${JSON.stringify(r6Calibration.forwardWorld || null)}`,
-            `Derecha: ${JSON.stringify(r6Calibration.rightWorld || null)}`,
-            `Arriba: ${JSON.stringify(r6Calibration.upWorld || null)}`
-        ].join("\n")
-        : "";
-
-    return [
-        ANIMATION_SYSTEM,
-        `MODELO: ${ANIMATION_MODEL}`,
-        `RIG OBJETIVO: ${R6_RIG_PATH}`,
-        `RIG NAME: ${R6_RIG_NAME}`,
-        `RIG TYPE: ${R6_RIG_TYPE}`,
-        `PARTES R6 PERMITIDAS: ${R6_PARTS.join(", ")}`,
-        `JOINTS R6: ${R6_JOINTS.join(", ")}`,
-        memoria,
-        conversacion ? `CONTEXTO RECIENTE:\n${conversacion}` : "",
-        calibracion,
-        `PETICIÓN DEL USUARIO:\n${mensajeUsuario}`,
-        "",
-        "PROCESO OBLIGATORIO:",
-        "1. Comprende la acción completa.",
-        "2. Divide el movimiento en fases naturales cuando corresponda.",
-        "3. Diseña coordinación corporal entre torso, brazos, piernas y cabeza.",
-        "4. Crea keyframes NUEVOS y coherentes.",
-        "5. Revisa continuidad, dirección y proporciones.",
-        "6. Comprueba que solo uses partes del R6.",
-        "7. Respeta exactamente la duración solicitada si el usuario la proporciona.",
-        "",
-        "DEVUELVE ÚNICAMENTE JSON VÁLIDO con esta forma:",
-        "{\"reply\":\"resumen breve\",\"animations\":[{\"name\":\"...\",\"path\":\"Workspace/dummy\",\"rigName\":\"dummy\",\"rigType\":\"R6\",\"looped\":false,\"priority\":\"Action\",\"duration\":1.0,\"phases\":[{\"name\":\"...\",\"start\":0,\"end\":0.5}],\"keyframes\":[{\"time\":0,\"poses\":[{\"part\":\"Torso\",\"x\":0,\"y\":0,\"z\":0,\"rx\":0,\"ry\":0,\"rz\":0}]}]}]}",
-        "Cada pose debe incluir part, x, y, z, rx, ry y rz."
-    ].filter(Boolean).join("\n\n");
-}
-
-function limitarNumero(valor, minimo, maximo) {
-    return Math.min(maximo, Math.max(minimo, Number(valor) || 0));
-}
-
-function validarPose(pose) {
-    if (!pose || !R6_PARTS.includes(pose.part)) return false;
-
-    return [pose.x, pose.y, pose.z, pose.rx, pose.ry, pose.rz]
-        .every((valor) => typeof valor === "number" && Number.isFinite(valor));
-}
-
-function validarAnimacion(animacion) {
-    if (!animacion || typeof animacion.name !== "string" || !animacion.name.trim()) return false;
-    if (animacion.path !== R6_RIG_PATH) return false;
-    if (animacion.rigName !== R6_RIG_NAME) return false;
-    if (animacion.rigType !== R6_RIG_TYPE) return false;
-    if (!Array.isArray(animacion.keyframes) || animacion.keyframes.length < 2) return false;
-
-    const duration = Number(animacion.duration);
-    if (!Number.isFinite(duration) || duration <= 0) return false;
-
-    let previousTime = -1;
-    for (const keyframe of animacion.keyframes) {
-        if (!keyframe || typeof keyframe.time !== "number" || !Number.isFinite(keyframe.time)) return false;
-        if (keyframe.time < previousTime || keyframe.time < 0 || keyframe.time > duration + 0.05) return false;
-        if (!Array.isArray(keyframe.poses)) return false;
-        if (!keyframe.poses.every(validarPose)) return false;
-        previousTime = keyframe.time;
-    }
-
-    return true;
-}
-
-function normalizarPose(pose) {
-    return {
-        part: pose.part,
-        x: limitarNumero(pose.x, -5, 5),
-        y: limitarNumero(pose.y, -5, 5),
-        z: limitarNumero(pose.z, -5, 5),
-        rx: limitarNumero(pose.rx, -180, 180),
-        ry: limitarNumero(pose.ry, -180, 180),
-        rz: limitarNumero(pose.rz, -180, 180)
-    };
-}
-
-function convertirResultado(resultado) {
-    if (!resultado || !Array.isArray(resultado.animations)) return null;
-
-    const actions = [];
-
-    for (const animation of resultado.animations) {
-        if (!validarAnimacion(animation)) {
-            console.warn(`⚠️ Animación rechazada por validación: ${animation?.name || "sin nombre"}`);
-            continue;
+    if (data.type === "keyframe") {
+        const time = clampNumber(data.time, 0, MAX_DURATION_SECONDS, "time");
+        if (!data.joints || typeof data.joints !== "object") {
+            throw new Error("Keyframe sin objeto joints.");
         }
 
-        const keyframes = animation.keyframes
-            .map((keyframe) => ({
-                time: Number(keyframe.time),
-                poses: keyframe.poses.map(normalizarPose)
-            }))
-            .sort((a, b) => a.time - b.time);
-
-        if (keyframes.length < 2) continue;
-
-        actions.push({
-            type: "create_animation",
-            name: animation.name,
-            path: R6_RIG_PATH,
-            rigName: R6_RIG_NAME,
-            rigType: R6_RIG_TYPE,
-            looped: Boolean(animation.looped),
-            priority: animation.priority || "Action",
-            duration: Number(animation.duration) || keyframes[keyframes.length - 1].time,
-            phases: Array.isArray(animation.phases) ? animation.phases : [],
-            keyframes
-        });
-    }
-
-    return actions.length
-        ? {
-            reply: String(resultado.reply || "Animación R6 generada correctamente."),
-            actions
-        }
-        : null;
-}
-
-export async function generarAnimacion(mensajeUsuario, historial, r6Calibration) {
-    const prompt = await crearPrompt(mensajeUsuario, historial, r6Calibration);
-
-    for (let intento = 1; intento <= 3; intento++) {
-        try {
-            console.log(`\n🎞️ Groq generando animación con ${ANIMATION_MODEL} (intento ${intento}/3)...`);
-
-            const texto = await preguntarGroq(
-                [
-                    {
-                        role: "system",
-                        content: "Genera animaciones profesionales y coherentes para Roblox R6. Respeta estrictamente el formato JSON solicitado."
-                    },
-                    { role: "user", content: prompt }
-                ],
-                {
-                    model: ANIMATION_MODEL,
-                    json: true,
-                    reasoningEffort: "default",
-                    reasoningFormat: "hidden",
-                    temperature: 0.6,
-                    maxCompletionTokens: 16384,
-                    attemptsPerKey: 2
-                }
-            );
-
-            const resultado = parsearRespuestaJson(texto);
-            const convertido = convertirResultado(resultado);
-
-            if (!convertido) {
-                throw new Error("Groq devolvió una animación que no pasó la validación R6.");
+        const joints = {};
+        for (const jointName of R6_JOINTS) {
+            const pose = data.joints[jointName];
+            if (!pose || typeof pose !== "object") {
+                throw new Error(`Keyframe incompleto: falta ${jointName}.`);
             }
 
-            console.log(`✅ Animación válida generada por ${ANIMATION_MODEL}.`);
-            console.log(`🎬 Acciones de animación: ${convertido.actions.length}`);
-            return convertido;
-        } catch (error) {
-            const mensaje = error instanceof Error ? error.message : String(error);
-            console.error(`❌ Error de animación con Groq: ${mensaje}`);
-
-            if (intento < 3) {
-                await new Promise((resolve) => setTimeout(resolve, intento * 1200));
+            const clean = {};
+            for (const field of NUMBER_FIELDS) {
+                const max = field === "x" || field === "y" || field === "z"
+                    ? (jointName === "RootJoint" ? 2 : 0.25)
+                    : 180;
+                clean[field] = clampNumber(
+                    pose[field] ?? 0,
+                    -max,
+                    max,
+                    `${jointName}.${field}`
+                );
             }
+            joints[jointName] = clean;
         }
+
+        return { type: "keyframe", time, joints };
     }
 
-    console.error("❌ Groq no pudo generar una animación válida después de 3 intentos.");
+    if (data.type === "complete" && stage === "finish") {
+        return { type: "complete" };
+    }
+
     return null;
 }
+
+export function buildPreviewPrompt(description, rig) {
+    return [
+        "TAREA: crear el primer 80% de una animación R6 a partir de una descripción escrita.",
+        "DESCRIPCIÓN DEL MOVIMIENTO:",
+        description,
+        "",
+        "DATOS REALES DEL RIG SELECCIONADO:",
+        JSON.stringify(rig),
+        "",
+        "REQUISITOS:",
+        "- Planifica el movimiento completo antes de emitir los keyframes.",
+        "- La animación final tendrá una duración entre 0.5 y 30 segundos.",
+        "- El primer pase debe cubrir desde t=0 hasta aproximadamente el 80% de la duración.",
+        "- Emite entre 8 y 32 keyframes para este primer pase, según la complejidad.",
+        "- Los tiempos deben ser crecientes y representar momentos significativos, no fotogramas aleatorios.",
+        "- El primer objeto debe ser: {\"type\":\"meta\",\"name\":\"...\",\"duration\":4,\"previewFrames\":16,\"looped\":false}",
+        "- Después emite un objeto por línea: {\"type\":\"keyframe\",\"time\":0.25,\"joints\":{...}}",
+        "- joints debe contener exactamente estas seis claves: RootJoint, Neck, Left Shoulder, Right Shoulder, Left Hip, Right Hip.",
+        "- Cada articulación contiene x,y,z,rx,ry,rz numéricos.",
+        "- Crea una pose inicial clara en t=0 y una pose que deje la acción preparada para terminar en el 80%.",
+        "- No emitas el 20% final. Se generará después de la aprobación humana.",
+        "- No devuelvas el objeto complete en esta fase.",
+        "",
+        "DEVUELVE ÚNICAMENTE NDJSON. UNA LÍNEA POR OBJETO. SIN MARKDOWN."
+    ].join("\n");
+}
+
+export function buildFinishPrompt(description, rig, session) {
+    const frames = [...session.keyframes.values()]
+        .sort((a, b) => a.time - b.time);
+
+    return [
+        "CONTINÚA Y TERMINA la animación R6 que el usuario ya aprobó en su vista previa.",
+        "No reinicies ni sustituyas el movimiento aprobado.",
+        "DESCRIPCIÓN ORIGINAL:",
+        description,
+        "",
+        "RIG R6:",
+        JSON.stringify(rig),
+        "",
+        "KEYFRAMES APROBADOS HASTA AHORA:",
+        JSON.stringify(frames),
+        "",
+        "INSTRUCCIONES:",
+        "- Continúa desde el último tiempo existente hasta la duración completa.",
+        "- Genera el 20% final con seguimiento, recuperación y una pose final coherente.",
+        "- Conserva la intención, ritmo y estilo del 80% aprobado.",
+        "- Puedes añadir ajustes muy pequeños a los últimos keyframes existentes solo si son necesarios para una transición suave, pero no cambies el sentido del movimiento aprobado.",
+        "- Emite primero los nuevos keyframes con tiempos superiores al último keyframe aprobado.",
+        "- Cada keyframe debe incluir las seis articulaciones y x,y,z,rx,ry,rz.",
+        "- Termina con una línea: {\"type\":\"complete\"}.",
+        "",
+        "FORMATO NDJSON ÚNICAMENTE. SIN TEXTO EXPLICATIVO NI MARKDOWN."
+    ].join("\n");
+}
+
+export function getPreviewProgress(frameCount, expectedFrames) {
+    if (!expectedFrames) return 15;
+    return Math.min(79, 15 + Math.floor((frameCount / expectedFrames) * 64));
+}
+
+export const APPROVAL_PROGRESS = PREVIEW_PROGRESS;
