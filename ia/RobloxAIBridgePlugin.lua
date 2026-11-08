@@ -400,10 +400,11 @@ local function applyLiveJointAction(action)
         return
     end
 
-    statusLabel.Text = "IA moviendo: " .. partName .. " (" .. jointName .. ")…"
     local target = toCFrame(action.pose)
+    local changed = motor.Transform ~= target
 
-    if motor.Transform ~= target then
+    if changed then
+        statusLabel.Text = "IA moviendo: " .. partName .. " (" .. jointName .. ")…"
         local tween = TweenService:Create(
             motor,
             TweenInfo.new(JOINT_STEP_SECONDS, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
@@ -415,9 +416,11 @@ local function applyLiveJointAction(action)
         if activeTweens[jointName] == tween then
             activeTweens[jointName] = nil
         end
+        log(string.format("IA movió %s en t=%.2fs", partName, tonumber(action.time) or 0))
+    else
+        statusLabel.Text = "IA mantiene: " .. partName .. " (" .. jointName .. ")"
+        log(string.format("IA mantiene %s sin cambio en t=%.2fs", partName, tonumber(action.time) or 0))
     end
-
-    log(string.format("IA movió %s en t=%.2fs", partName, tonumber(action.time) or 0))
 end
 
 local function updateCheckpointAndCompletion()
