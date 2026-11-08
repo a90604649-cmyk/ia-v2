@@ -90,6 +90,9 @@ export async function generatePreview(session) {
     if (!meta || receivedFrames < Math.ceil(meta.previewFrames * 0.8)) {
         throw new Error("Gemini no generó al menos el 80% de los keyframes previstos para la vista previa.");
     }
+    if (lastTime < meta.duration * 0.65) {
+        throw new Error("La vista previa no cubrió suficiente duración del movimiento para solicitar aprobación.");
+    }
 
     session.meta = meta;
     session.progress = PREVIEW_PROGRESS;
@@ -158,6 +161,9 @@ export async function generateFinish(session, feedback = "") {
 
     if (addedFrames < 1 || !session.modelCompleted) {
         throw new Error("Gemini no terminó la fase final de la animación.");
+    }
+    if (lastTime < session.meta.duration * 0.97) {
+        throw new Error("La fase final no alcanzó el final de la duración planificada.");
     }
 
     session.status = "complete";
