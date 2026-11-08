@@ -316,6 +316,8 @@ local function makePose(parent, name, cframe)
     local pose = Instance.new("Pose")
     pose.Name = name
     pose.CFrame = cframe
+    pose.EasingStyle = Enum.PoseEasingStyle.Cubic
+    pose.EasingDirection = Enum.PoseEasingDirection.Out
     pose.Parent = parent
     return pose
 end
