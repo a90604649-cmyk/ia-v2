@@ -1,25 +1,26 @@
 import "dotenv/config";
 
-const MODEL = String(process.env.GEMINI_MODEL || "gemini-4-argon").trim();
 const API_KEY = String(process.env.GEMINI_API_KEY || "").trim();
-const THINKING_LEVEL = String(process.env.GEMINI_THINKING_LEVEL || "HIGH").toUpperCase();
+const ANTIGRAVITY_AGENT = String(
+    process.env.ANTIGRAVITY_AGENT || "antigravity-preview-latest"
+).trim();
 
 function parseSseBlock(block) {
-    const data = block
-        .split(/\r?\n/)
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice(5).trim())
-        .join("\n");
+    let eventName = "";
+    const dataLines = [];
 
-    if (!data || data === "[DONE]") return [];
+    for (const line of block.split(/\r?\n/)) {
+        if (line.startsWith("event:")) eventName = line.slice(6).trim();
+        else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+    }
+
+    const data = dataLines.join("\n");
+    if (!data || data === "[DONE]") return null;
+
     try {
-        const payload = JSON.parse(data);
-        const parts = payload?.candidates?.[0]?.content?.parts || [];
-        return parts
-            .filter((part) => typeof part.text === "string" && part.thought !== true)
-            .map((part) => part.text);
+        return { eventName, payload: JSON.parse(data) };
     } catch {
-        return [];
+        return null;
     }
 }
 
@@ -28,66 +29,96 @@ export async function streamGeminiText({ system, prompt, onText, signal }) {
         throw new Error("Falta GEMINI_API_KEY. Configúrala en ia/.env; nunca la pongas en el plugin.");
     }
 
-    if (!["LOW", "MEDIUM", "HIGH"].includes(THINKING_LEVEL)) {
-        throw new Error("GEMINI_THINKING_LEVEL debe ser LOW, MEDIUM o HIGH para Gemini 4 Argon.");
-    }
-
-    const endpoint =
-        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(MODEL)}:streamGenerateContent?alt=sse`;
-
-    const response = await fetch(endpoint, {
+    const response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
             "x-goog-api-key": API_KEY
         },
         body: JSON.stringify({
-            systemInstruction: {
-                parts: [{ text: system }]
-            },
-            contents: [{
-                role: "user",
-                parts: [{ text: prompt }]
-            }],
-            generationConfig: {
-                thinkingConfig: {
-                    thinkingLevel: THINKING_LEVEL
-                }
-            }
+            agent: ANTIGRAVITY_AGENT,
+            input: `${system}\n\nINSTRUCCIONES DE ESTA ANIMACIÓN:\n${prompt}`,
+            environment: "remote",
+            stream: true,
+            agent_config: { type: "antigravity" }
         }),
         signal
     });
 
     if (!response.ok) {
-        const detail = (await response.text()).slice(0, 1800);
-        throw new Error(`Gemini API HTTP ${response.status}: ${detail}`);
+        const detail = (await response.text()).slice(0, 2400);
+        throw new Error(`Antigravity Interactions API HTTP ${response.status}: ${detail}`);
     }
 
     if (!response.body) {
-        throw new Error("Gemini no devolvió un flujo de respuesta.");
+        throw new Error("Antigravity no devolvió un flujo de respuesta.");
     }
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
+    const stepTypes = new Map();
     let buffer = "";
+    let completed = false;
+    let terminalError = null;
 
-    while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
+    const processBlock = (block) => {
+        const parsed = parseSseBlock(block);
+        if (!parsed) return;
 
-        buffer += decoder.decode(value, { stream: true });
-        const blocks = buffer.split(/\r?\n\r?\n/);
-        buffer = blocks.pop() || "";
-
-        for (const block of blocks) {
-            for (const text of parseSseBlock(block)) {
-                onText(text);
-            }
+        const { eventName, payload } = parsed;
+        if (eventName === "step.start" && payload.step?.type) {
+            stepTypes.set(payload.index, payload.step.type);
+            return;
         }
+
+        if (eventName === "step.delta") {
+            const stepType = stepTypes.get(payload.index);
+            // Never pass internal thought summaries into the animation protocol.
+            if (
+                stepType === "model_output" &&
+                payload.delta?.type === "text" &&
+                typeof payload.delta.text === "string"
+            ) {
+                onText(payload.delta.text);
+            }
+            return;
+        }
+
+        if (eventName === "interaction.completed") {
+            const status = payload.interaction?.status;
+            if (status === "completed") completed = true;
+            else terminalError = new Error(
+                `Antigravity terminó con estado "${status || "desconocido"}".`
+            );
+            return;
+        }
+
+        if (eventName === "interaction.failed" || eventName === "error") {
+            terminalError = new Error(
+                payload.error?.message || payload.message || "Antigravity informó un error durante la generación."
+            );
+        }
+    };
+
+    try {
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const blocks = buffer.split(/\r?\n\r?\n/);
+            buffer = blocks.pop() || "";
+            for (const block of blocks) processBlock(block);
+        }
+
+        buffer += decoder.decode();
+        if (buffer.trim()) processBlock(buffer);
+    } finally {
+        reader.releaseLock();
     }
 
-    buffer += decoder.decode();
-    if (buffer.trim()) {
-        for (const text of parseSseBlock(buffer)) onText(text);
+    if (terminalError) throw terminalError;
+    if (!completed) {
+        throw new Error("El flujo de Antigravity terminó sin el evento interaction.completed.");
     }
 }
