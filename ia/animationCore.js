@@ -160,8 +160,7 @@ export function buildAnimationPrompt(description, rigs) {
         "- En los tiempos siguientes puedes emitir solo las articulaciones que cambien; las demás conservan la pose anterior.",
         "- Todos los rigs comparten los mismos tiempos. No animes un rig completo y después el otro: diseña sus movimientos como una sola escena coordinada.",
         "- Si hay dos rigs, interpreta sus papeles según la descripción (por ejemplo, uno entrega algo y el otro lo recibe, se saludan, caminan juntos o interactúan). Coordina miradas, distancias, gestos y reacciones.",
-        "- Usa worldPosition y worldPivot para entender dónde empieza cada Dummy y mantener coherentes las distancias y direcciones entre ellos."
-
+        "- Usa worldPosition y worldPivot para entender dónde empieza cada Dummy y mantener coherentes las distancias y direcciones entre ellos.",
         "- Usa las seis articulaciones R6 exactas: RootJoint, Neck, Left Shoulder, Right Shoulder, Left Hip, Right Hip.",
         "- Cada pose contiene x,y,z,rx,ry,rz numéricos.",
         "- Duración total entre 0.5 y 30 segundos. Distribuye keyframes durante toda la duración.",
