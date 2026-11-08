@@ -161,7 +161,8 @@ export function buildPreviewPrompt(description, rig) {
 
 export function buildFinishPrompt(description, rig, session) {
     const frames = [...session.keyframes.values()]
-        .sort((a, b) => a.time - b.time);
+        .sort((a, b) => a.time - b.time)
+        .map(({ time, joints }) => ({ time, joints }));
 
     return [
         "CONTINÚA Y TERMINA la animación R6 que el usuario ya aprobó en su vista previa.",
