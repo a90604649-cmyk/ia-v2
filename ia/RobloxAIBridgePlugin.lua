@@ -1,10 +1,10 @@
 local HttpService = game:GetService("HttpService")
 local Selection = game:GetService("Selection")
 local TweenService = game:GetService("TweenService")
-local ServerStorage = game:GetService("ServerStorage")
 
 local BASE_URL = "http://127.0.0.1:3000"
 local POLL_INTERVAL = 0.30
+local FRAME_TRANSITION_SECONDS = 0.14
 
 local JOINTS = {
     "RootJoint",
@@ -37,7 +37,7 @@ local JOINT_TO_PART = {
 local toolbar = plugin:CreateToolbar("R6 Live Animator")
 local openButton = toolbar:CreateButton(
     "R6 Live Animator",
-    "Animar un dummy R6 en directo con IA",
+    "Animar uno o dos Dummys R6 al mismo tiempo con IA",
     ""
 )
 openButton.ClickableWhenViewportHidden = true
@@ -46,10 +46,10 @@ local widgetInfo = DockWidgetPluginGuiInfo.new(
     Enum.InitialDockState.Right,
     true,
     false,
-    360,
-    520,
-    320,
-    420
+    380,
+    560,
+    340,
+    460
 )
 
 local widget = plugin:CreateDockWidgetPluginGui("R6LiveAnimator", widgetInfo)
@@ -89,7 +89,10 @@ local function makeLabel(text, height, color, bold)
 end
 
 local title = makeLabel("R6 LIVE ANIMATOR", 28, Color3.fromRGB(255, 255, 255), true)
-local subtitle = makeLabel("La IA mueve cada parte en el viewport mientras crea los keyframes.", 34)
+local subtitle = makeLabel(
+    "Selecciona uno o dos Dummys R6. La IA los animará en una misma línea de tiempo.",
+    42
+)
 
 local prompt = Instance.new("TextBox")
 prompt.Name = "AnimationDescription"
@@ -105,7 +108,7 @@ prompt.Font = Enum.Font.Gotham
 prompt.TextSize = 13
 prompt.TextColor3 = Color3.fromRGB(245, 246, 248)
 prompt.PlaceholderColor3 = Color3.fromRGB(145, 150, 160)
-prompt.PlaceholderText = "Describe la animación. Ejemplo: el personaje levanta lentamente el brazo derecho, saluda tres veces y después lo baja."
+prompt.PlaceholderText = "Ejemplo: Dummy 1 camina hacia Dummy 2, lo saluda y Dummy 2 responde con la mano."
 prompt.Text = ""
 prompt.Parent = root
 
@@ -116,13 +119,13 @@ promptPadding.PaddingLeft = UDim.new(0, 8)
 promptPadding.PaddingRight = UDim.new(0, 8)
 promptPadding.Parent = prompt
 
-local selectedRigLabel = makeLabel("Rig: buscando dummy R6…", 22, Color3.fromRGB(174, 190, 214), false)
-local statusLabel = makeLabel("Conecta el servidor local y selecciona un dummy R6.", 42, Color3.fromRGB(220, 222, 228), false)
-local progressLabel = makeLabel("Progreso: 0% · Keyframes: 0", 22, Color3.fromRGB(174, 190, 214), false)
+local selectedRigLabel = makeLabel("Rigs: selecciona uno o dos Dummys R6…", 30, Color3.fromRGB(174, 190, 214), false)
+local statusLabel = makeLabel("Conecta el servidor local y selecciona tus Dummys.", 42, Color3.fromRGB(220, 222, 228), false)
+local progressLabel = makeLabel("Progreso: 0% · Frames sincronizados: 0", 22, Color3.fromRGB(174, 190, 214), false)
 
 local logPanel = Instance.new("TextLabel")
 logPanel.Name = "DebugLogs"
-logPanel.Size = UDim2.new(1, 0, 0, 116)
+logPanel.Size = UDim2.new(1, 0, 0, 150)
 logPanel.BackgroundColor3 = Color3.fromRGB(18, 20, 25)
 logPanel.BorderSizePixel = 0
 logPanel.TextColor3 = Color3.fromRGB(170, 205, 180)
@@ -131,7 +134,7 @@ logPanel.TextSize = 11
 logPanel.TextWrapped = true
 logPanel.TextXAlignment = Enum.TextXAlignment.Left
 logPanel.TextYAlignment = Enum.TextYAlignment.Top
-logPanel.Text = "LOGS DEL PLUGIN\\nEsperando actividad..."
+logPanel.Text = "LOGS DEL PLUGIN\nEsperando actividad..."
 logPanel.Parent = root
 
 local pluginLogs = {}
@@ -139,10 +142,10 @@ local function log(message)
     local line = os.date("%H:%M:%S") .. "  " .. tostring(message)
     print("[R6 Live Animator] " .. line)
     table.insert(pluginLogs, line)
-    while #pluginLogs > 9 do
+    while #pluginLogs > 11 do
         table.remove(pluginLogs, 1)
     end
-    logPanel.Text = "LOGS DEL PLUGIN\\n" .. table.concat(pluginLogs, "\\n")
+    logPanel.Text = "LOGS DEL PLUGIN\n" .. table.concat(pluginLogs, "\n")
 end
 
 local function makeButton(text, color)
@@ -159,29 +162,28 @@ local function makeButton(text, color)
 end
 
 local startButton = makeButton("Empezar animación", Color3.fromRGB(42, 112, 190))
-local approveButton = makeButton("Aprobar al 80% y terminar", Color3.fromRGB(34, 139, 91))
-approveButton.Visible = false
 local cancelButton = makeButton("Cancelar", Color3.fromRGB(150, 62, 62))
 cancelButton.Visible = false
 
-local footer = makeLabel("Vista previa directa en el viewport · Clips vinculados al rig mediante AnimSaves", 38, Color3.fromRGB(135, 143, 156), false)
+local footer = makeLabel(
+    "Clips guardados en cada Dummy > AnimSaves · Compatibles con Moon Animator",
+    38,
+    Color3.fromRGB(135, 143, 156),
+    false
+)
 
 local sessionId = nil
 local running = false
-local awaitingApproval = false
 local lastSequence = 0
-local currentRig = nil
-local currentMotors = {}
-local currentBaseC0 = {}
-local lastFrameTime = nil
-local currentSequence = nil
+local currentRigs = {}
+local rigsById = {}
+local expectedRigCount = 0
 local keyframeCount = 0
 local activeTweens = {}
 local liveFrameQueue = {}
 local liveFrameRunner = false
-local checkpointReceived = false
+local pendingFramesByTime = {}
 local completionReceived = false
-local animationFolder = nil
 
 local function requestJson(method, url, payload)
     local options = {
@@ -221,33 +223,28 @@ local function requestJson(method, url, payload)
     return decoded, nil
 end
 
-local function findSelectedRig()
-    local selected = Selection:Get()
-    local candidate = selected[1]
-
-    while candidate and not candidate:IsA("Model") do
+local function findRigAncestor(instance)
+    local candidate = instance
+    while candidate do
+        if candidate:IsA("Model") and candidate:FindFirstChildOfClass("Humanoid") then
+            return candidate
+        end
         candidate = candidate.Parent
     end
+    return nil
+end
 
-    if not candidate then
-        candidate = workspace:FindFirstChild("dummy")
-    end
-
-    if not candidate or not candidate:IsA("Model") then
-        return nil, "Selecciona el Model del dummy R6 en Explorer o en el viewport."
-    end
-
-    local humanoid = candidate:FindFirstChildOfClass("Humanoid")
+local function validateRig(rig, rigId)
+    local humanoid = rig:FindFirstChildOfClass("Humanoid")
     if not humanoid then
-        return nil, "El Model seleccionado no tiene Humanoid."
+        return nil, "El modelo " .. rig.Name .. " no tiene Humanoid."
     end
-
     if humanoid.RigType ~= Enum.HumanoidRigType.R6 then
-        return nil, "El personaje seleccionado es R15. Este animador trabaja exclusivamente con R6."
+        return nil, rig.Name .. " es R15. Este animador trabaja exclusivamente con R6."
     end
 
     local motors = {}
-    for _, descendant in ipairs(candidate:GetDescendants()) do
+    for _, descendant in ipairs(rig:GetDescendants()) do
         if descendant:IsA("Motor6D") and table.find(JOINTS, descendant.Name) then
             motors[descendant.Name] = descendant
         end
@@ -255,22 +252,70 @@ local function findSelectedRig()
 
     for _, name in ipairs(JOINTS) do
         if not motors[name] then
-            return nil, "Falta la articulación R6: " .. name
+            return nil, rig.Name .. " no tiene la articulación R6 " .. name
         end
     end
-
     for _, name in ipairs(PARTS) do
-        if not candidate:FindFirstChild(name, true) then
-            return nil, "Falta la parte R6: " .. name
+        if not rig:FindFirstChild(name, true) then
+            return nil, rig.Name .. " no tiene la parte R6 " .. name
         end
     end
 
-    return candidate, nil, motors
+    local baseC0 = {}
+    for _, name in ipairs(JOINTS) do
+        baseC0[name] = motors[name].C0
+    end
+
+    return {
+        rigId = rigId,
+        model = rig,
+        motors = motors,
+        baseC0 = baseC0,
+        sequence = nil,
+        animSaves = nil
+    }, nil
+end
+
+local function findSelectedRigs()
+    local selected = Selection:Get()
+    local candidates = {}
+    local seen = {}
+
+    for _, instance in ipairs(selected) do
+        local rig = findRigAncestor(instance)
+        if rig and not seen[rig] then
+            seen[rig] = true
+            table.insert(candidates, rig)
+        end
+    end
+
+    if #candidates == 0 and #selected == 0 then
+        local fallback = workspace:FindFirstChild("dummy")
+        if fallback and fallback:IsA("Model") then
+            table.insert(candidates, fallback)
+        end
+    end
+
+    if #candidates == 0 then
+        return nil, "Selecciona el Model de uno o dos Dummys R6 en Explorer o en el viewport."
+    end
+    if #candidates > 2 then
+        return nil, "Selecciona como máximo dos Dummys R6."
+    end
+
+    local states = {}
+    for index, rig in ipairs(candidates) do
+        local state, rigError = validateRig(rig, "R" .. tostring(index))
+        if not state then
+            return nil, rigError
+        end
+        table.insert(states, state)
+    end
+    return states, nil
 end
 
 local function frameToArray(cframe)
-    local values = { cframe:GetComponents() }
-    return values
+    return { cframe:GetComponents() }
 end
 
 local function vectorToObject(vector)
@@ -281,7 +326,8 @@ local function vectorToObject(vector)
     }
 end
 
-local function inspectRig(rig, motors)
+local function inspectRig(state)
+    local rig = state.model
     local partData = {}
     for _, name in ipairs(PARTS) do
         local part = rig:FindFirstChild(name, true)
@@ -294,7 +340,7 @@ local function inspectRig(rig, motors)
 
     local jointData = {}
     for _, name in ipairs(JOINTS) do
-        local motor = motors[name]
+        local motor = state.motors[name]
         jointData[name] = {
             part0 = motor.Part0 and motor.Part0.Name or "",
             part1 = motor.Part1 and motor.Part1.Name or "",
@@ -305,6 +351,7 @@ local function inspectRig(rig, motors)
     end
 
     return {
+        rigId = state.rigId,
         rigName = rig.Name,
         rigType = "R6",
         parts = partData,
@@ -324,38 +371,52 @@ local function toCFrame(pose)
     )
 end
 
-local function getAnimationFolder()
-    if not currentRig then
-        error("No hay un rig seleccionado para guardar la animación.")
+local function moveLegacySequences(sourceFolder, targetFolder)
+    if not sourceFolder or not sourceFolder:IsA("Folder") or sourceFolder == targetFolder then
+        return
     end
 
-    -- El Animation Editor de Studio espera este contenedor exacto:
-    -- ServerStorage.RBX_ANIMSAVES.<nombre del rig>
-    local rootFolder = ServerStorage:FindFirstChild("RBX_ANIMSAVES")
-    if rootFolder and not rootFolder:IsA("Folder") then
-        error("ServerStorage.RBX_ANIMSAVES existe, pero no es una Folder.")
+    local moved = 0
+    for _, child in ipairs(sourceFolder:GetChildren()) do
+        if child:IsA("KeyframeSequence") then
+            local baseName = child.Name
+            local newName = baseName
+            local suffix = 1
+            while targetFolder:FindFirstChild(newName) do
+                newName = baseName .. "_Old_" .. tostring(suffix)
+                suffix += 1
+            end
+            child.Name = newName
+            child.Parent = targetFolder
+            moved += 1
+        end
+    end
+    if moved > 0 then
+        log(string.format("Se conservaron %d clips anteriores de %s.", moved, targetFolder.Parent.Name))
+    end
+end
+
+local function getMoonAnimSavesFolder(rig)
+    local existing = rig:FindFirstChild("AnimSaves")
+    local legacyFolder = nil
+
+    if existing and existing:IsA("ObjectValue") then
+        legacyFolder = existing.Value
+        existing.Name = "AnimSaves_LegacyReference"
+        existing = nil
+        log("Se conservó la referencia AnimSaves anterior en " .. rig.Name .. ".")
+    elseif existing and not existing:IsA("Folder") then
+        error(rig.Name .. ".AnimSaves existe, pero no es Folder.")
     end
 
-    if not rootFolder then
-        rootFolder = Instance.new("Folder")
-        rootFolder.Name = "RBX_ANIMSAVES"
-        rootFolder.Parent = ServerStorage
+    if not existing then
+        existing = Instance.new("Folder")
+        existing.Name = "AnimSaves"
+        existing.Parent = rig
     end
 
-    local rigFolder = rootFolder:FindFirstChild(currentRig.Name)
-    if rigFolder and not rigFolder:IsA("Folder") then
-        error("RBX_ANIMSAVES ya contiene un objeto que no es Folder llamado " .. currentRig.Name)
-    end
-
-    if not rigFolder then
-        rigFolder = Instance.new("Folder")
-        rigFolder.Name = currentRig.Name
-        rigFolder.Parent = rootFolder
-    end
-
-    animationFolder = rigFolder
-    log("Carpeta de clips: ServerStorage.RBX_ANIMSAVES." .. currentRig.Name)
-    return animationFolder
+    moveLegacySequences(legacyFolder, existing)
+    return existing
 end
 
 local function makePose(parent, name, cframe)
@@ -368,97 +429,45 @@ local function makePose(parent, name, cframe)
     return pose
 end
 
-local function migrateSavedSequences(sourceFolder, targetFolder)
-    if not sourceFolder or not sourceFolder:IsA("Folder") or sourceFolder == targetFolder then
-        return
+local function createSequence(state, name)
+    local folder = getMoonAnimSavesFolder(state.model)
+    state.animSaves = folder
+
+    local baseName = (name or "R6_AI_Animation"):gsub("[^%w_%-]", "_")
+    local safeRigName = state.model.Name:gsub("[^%w_%-]", "_")
+    local sequenceName = baseName .. "_" .. safeRigName
+    local candidateName = sequenceName
+    local suffix = 1
+    while folder:FindFirstChild(candidateName) do
+        candidateName = sequenceName .. "_" .. tostring(suffix)
+        suffix += 1
     end
 
-    local migrated = 0
-    for _, child in ipairs(sourceFolder:GetChildren()) do
-        if child:IsA("KeyframeSequence") or child:IsA("CurveAnimation") then
-            local baseName = child.Name
-            local targetName = baseName
-            local suffix = 1
-            while targetFolder:FindFirstChild(targetName) do
-                targetName = baseName .. "_Migrated_" .. tostring(suffix)
-                suffix += 1
-            end
-            child.Name = targetName
-            child.Parent = targetFolder
-            migrated += 1
-        end
-    end
-
-    if migrated > 0 then
-        log(string.format("Se migraron %d clip(s) a RBX_ANIMSAVES.", migrated))
-    end
-end
-
-local function linkAnimationFolderToRig(folder)
-    if not currentRig or not currentRig.Parent then
-        return
-    end
-
-    local reference = currentRig:FindFirstChild("AnimSaves")
-    local previousFolder = nil
-
-    if reference and reference:IsA("ObjectValue") then
-        previousFolder = reference.Value
-    elseif reference and reference:IsA("Folder") then
-        -- Preserve any legacy folder instead of deleting the user's saved clips.
-        previousFolder = reference
-        local suffix = 1
-        local legacyName = "AnimSaves_Legacy"
-        while currentRig:FindFirstChild(legacyName) do
-            suffix += 1
-            legacyName = "AnimSaves_Legacy_" .. tostring(suffix)
-        end
-        reference.Name = legacyName
-        log("Se conservó la carpeta AnimSaves anterior como " .. legacyName)
-        reference = nil
-    elseif reference then
-        log("AnimSaves tiene un tipo inesperado; no se reemplazó para evitar borrar datos.")
-        return
-    end
-
-    if not reference then
-        reference = Instance.new("ObjectValue")
-        reference.Name = "AnimSaves"
-        reference.Parent = currentRig
-    end
-
-    migrateSavedSequences(previousFolder, folder)
-    reference.Value = folder
-    log("AnimSaves apunta a ServerStorage.RBX_ANIMSAVES." .. currentRig.Name)
-end
-
-local function createSequence(name)
-    local folder = getAnimationFolder()
-    linkAnimationFolderToRig(folder)
     local sequence = Instance.new("KeyframeSequence")
-    sequence.Name = (name or "R6_AI_Animation"):gsub("[^%w_%-]", "_")
+    sequence.Name = candidateName
     sequence.Loop = false
     sequence.Priority = Enum.AnimationPriority.Action
     sequence.Parent = folder
-    currentSequence = sequence
+    state.sequence = sequence
+    log("Clip creado: " .. state.model.Name .. ".AnimSaves." .. sequence.Name)
     return sequence
 end
 
-local function addSequenceKeyframe(data)
-    if not currentSequence then
-        createSequence("R6_AI_Animation")
+local function addSequenceKeyframe(state, data, frameIndex)
+    if not state.sequence then
+        createSequence(state, "R6_AI_Animation")
     end
 
-    for _, old in ipairs(currentSequence:GetChildren()) do
+    for _, old in ipairs(state.sequence:GetChildren()) do
         if old:IsA("Keyframe") and math.abs(old.Time - data.time) < 0.0005 then
             old:Destroy()
         end
     end
 
     local keyframe = Instance.new("Keyframe")
-    keyframe.Name = string.format("Keyframe_%03d", keyframeCount + 1)
+    keyframe.Name = string.format("Keyframe_%03d", frameIndex)
     keyframe.Time = data.time
-    keyframe.Parent = currentSequence
+    keyframe.Parent = state.sequence
 
     local rootPose = makePose(keyframe, "HumanoidRootPart", CFrame.identity)
     local torsoPose = makePose(rootPose, "Torso", toCFrame(data.joints["RootJoint"]))
@@ -470,111 +479,6 @@ local function addSequenceKeyframe(data)
     makePose(torsoPose, "Right Leg", toCFrame(data.joints["Right Hip"]))
 end
 
-local JOINT_STEP_SECONDS = 0.14
-local resetSessionUi
-
-local function applyLiveJointAction(action)
-    if not currentRig or not currentRig.Parent then
-        return
-    end
-
-    local jointName = action.joint
-    local partName = JOINT_TO_PART[jointName] or jointName
-    local motor = currentMotors[jointName]
-    if not motor then
-        log("No se encontró Motor6D para " .. tostring(jointName))
-        return
-    end
-
-    local baseC0 = currentBaseC0[jointName] or motor.C0
-    local target = baseC0 * toCFrame(action.pose)
-    local changed = motor.C0 ~= target
-
-    if changed then
-        statusLabel.Text = "IA moviendo: " .. partName .. " (" .. jointName .. ")…"
-        local created, tween = pcall(function()
-            return TweenService:Create(
-                motor,
-                TweenInfo.new(JOINT_STEP_SECONDS, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
-                { C0 = target }
-            )
-        end)
-
-        if created and tween then
-            activeTweens[jointName] = tween
-            local played = pcall(function()
-                tween:Play()
-                tween.Completed:Wait()
-            end)
-            if activeTweens[jointName] == tween then
-                activeTweens[jointName] = nil
-            end
-            if not played then
-                pcall(function() tween:Cancel() end)
-                motor.C0 = target
-                log("Tween no disponible; pose C0 aplicada directamente a " .. partName)
-            end
-        else
-            motor.C0 = target
-            log("Tween no disponible; pose C0 aplicada directamente a " .. partName)
-        end
-
-        log(string.format("IA movió %s en t=%.2fs", partName, tonumber(action.time) or 0))
-    else
-        statusLabel.Text = "IA mantiene: " .. partName .. " (" .. jointName .. ")"
-        log(string.format("IA mantiene %s sin cambio en t=%.2fs", partName, tonumber(action.time) or 0))
-    end
-end
-
-local function updateCheckpointAndCompletion()
-    if not liveFrameRunner and #liveFrameQueue == 0 then
-        if completionReceived then
-            statusLabel.Text = "Animación terminada. KeyframeSequence editable en ServerStorage/R6LiveAnimations."
-            progressLabel.Text = string.format("Progreso: 100%% · Keyframes: %d", keyframeCount)
-            resetSessionUi()
-        elseif checkpointReceived then
-            awaitingApproval = true
-            approveButton.Visible = true
-            statusLabel.Text = "80% listo. La vista previa terminó; revisa el dummy y aprueba para continuar."
-            progressLabel.Text = string.format("Progreso: 80%% · Keyframes: %d", keyframeCount)
-        end
-    end
-end
-
-local function queueLiveJointAction(action)
-    table.insert(liveFrameQueue, action)
-    if liveFrameRunner then return end
-
-    liveFrameRunner = true
-    task.spawn(function()
-        while running and #liveFrameQueue > 0 do
-            local nextAction = table.remove(liveFrameQueue, 1)
-            local ok, actionError = pcall(applyLiveJointAction, nextAction)
-            if not ok then
-                log("ERROR aplicando movimiento " .. tostring(nextAction.joint) .. ": " .. tostring(actionError))
-            end
-        end
-
-        liveFrameRunner = false
-        if not running then
-            startButton.Active = true
-            startButton.AutoButtonColor = true
-        end
-        updateCheckpointAndCompletion()
-    end)
-end
-
-local function queueLiveKeyframe(data)
-    for _, jointName in ipairs(JOINTS) do
-        queueLiveJointAction({
-            type = "joint",
-            time = data.time,
-            joint = jointName,
-            pose = data.joints[jointName]
-        })
-    end
-end
-
 local function cancelActiveTweens()
     for _, tween in pairs(activeTweens) do
         pcall(function()
@@ -584,31 +488,205 @@ local function cancelActiveTweens()
     activeTweens = {}
 end
 
-local function restoreRigBaseC0()
-    for _, jointName in ipairs(JOINTS) do
-        local motor = currentMotors[jointName]
-        local baseC0 = currentBaseC0[jointName]
-        if motor and baseC0 then
-            pcall(function()
-                motor.C0 = baseC0
-            end)
+local function applySynchronizedFrameGroup(group)
+    local tweens = {}
+    local movedJoints = 0
+
+    for rigId, frame in pairs(group.rigs) do
+        local state = rigsById[rigId]
+        if state and state.model and state.model.Parent then
+            for _, jointName in ipairs(JOINTS) do
+                local motor = state.motors[jointName]
+                local pose = frame.joints[jointName]
+                if motor and pose then
+                    local baseC0 = state.baseC0[jointName] or motor.C0
+                    local target = baseC0 * toCFrame(pose)
+                    if motor.C0 ~= target then
+                        local tweenInfo = TweenInfo.new(
+                            FRAME_TRANSITION_SECONDS,
+                            Enum.EasingStyle.Sine,
+                            Enum.EasingDirection.InOut
+                        )
+                        local created, tween = pcall(function()
+                            return TweenService:Create(motor, tweenInfo, { C0 = target })
+                        end)
+                        if created and tween then
+                            table.insert(tweens, {
+                                tween = tween,
+                                motor = motor,
+                                target = target,
+                                rigId = rigId,
+                                jointName = jointName
+                            })
+                        else
+                            motor.C0 = target
+                            movedJoints += 1
+                        end
+                    end
+                end
+            end
         end
     end
-    currentBaseC0 = {}
+
+    -- Start every joint tween on every selected rig before waiting for any of them.
+    for _, entry in ipairs(tweens) do
+        local played = pcall(function()
+            entry.tween:Play()
+        end)
+        if not played then
+            entry.motor.C0 = entry.target
+            movedJoints += 1
+        else
+            movedJoints += 1
+        end
+    end
+
+    for _, entry in ipairs(tweens) do
+        pcall(function()
+            entry.tween.Completed:Wait()
+        end)
+    end
+
+    log(string.format(
+        "Frame sincronizado t=%.3fs · %d Dummy(s) · %d articulaciones",
+        tonumber(group.time) or 0,
+        expectedRigCount,
+        movedJoints
+    ))
+    statusLabel.Text = string.format(
+        "Moviendo %d Dummys al mismo tiempo · t=%.2fs",
+        expectedRigCount,
+        tonumber(group.time) or 0
+    )
 end
 
-resetSessionUi = function()
+local function updateCompletion()
+    if completionReceived and not liveFrameRunner and #liveFrameQueue == 0 then
+        statusLabel.Text = string.format(
+            "Animación completa. %d clip(s) guardados en AnimSaves.",
+            expectedRigCount
+        )
+        progressLabel.Text = string.format(
+            "Progreso: 100%% · Frames sincronizados: %d",
+            keyframeCount
+        )
+        running = false
+        sessionId = nil
+        cancelButton.Visible = false
+        startButton.Active = true
+        startButton.AutoButtonColor = true
+    end
+end
+
+local function queueSynchronizedFrame(group)
+    table.insert(liveFrameQueue, group)
+    if liveFrameRunner then
+        return
+    end
+
+    liveFrameRunner = true
+    task.spawn(function()
+        while running and #liveFrameQueue > 0 do
+            local nextGroup = table.remove(liveFrameQueue, 1)
+            local ok, applyError = pcall(applySynchronizedFrameGroup, nextGroup)
+            if not ok then
+                log("Error aplicando frame sincronizado: " .. tostring(applyError))
+            end
+        end
+
+        liveFrameRunner = false
+        if not running then
+            startButton.Active = true
+            startButton.AutoButtonColor = true
+        end
+        updateCompletion()
+    end)
+end
+
+local function queueFrameEvent(event)
+    local state = rigsById[event.rigId]
+    if not state then
+        log("Frame recibido para rig desconocido: " .. tostring(event.rigId))
+        return
+    end
+
+    local timeKey = string.format("%.4f", tonumber(event.time) or 0)
+    local bucket = pendingFramesByTime[timeKey]
+    if not bucket then
+        bucket = {
+            time = tonumber(event.time) or 0,
+            rigs = {}
+        }
+        pendingFramesByTime[timeKey] = bucket
+    end
+
+    if bucket.rigs[event.rigId] then
+        log("Frame duplicado ignorado para " .. state.model.Name .. " en t=" .. timeKey)
+        return
+    end
+
+    bucket.rigs[event.rigId] = event
+    local receivedCount = 0
+    for _ in pairs(bucket.rigs) do
+        receivedCount += 1
+    end
+
+    log(string.format(
+        "Frame recibido de %s (%d/%d rigs) en t=%.3fs",
+        state.model.Name,
+        receivedCount,
+        expectedRigCount,
+        bucket.time
+    ))
+
+    if receivedCount == expectedRigCount then
+        local frameIndex = keyframeCount + 1
+        for _, rigState in ipairs(currentRigs) do
+            local rigFrame = bucket.rigs[rigState.rigId]
+            if not rigFrame then
+                log("No llegó el frame sincronizado de " .. rigState.model.Name)
+                return
+            end
+            addSequenceKeyframe(rigState, rigFrame, frameIndex)
+        end
+
+        keyframeCount += 1
+        pendingFramesByTime[timeKey] = nil
+        queueSynchronizedFrameGroup(bucket)
+        progressLabel.Text = string.format(
+            "Progreso: %d%% · Frames sincronizados: %d",
+            math.floor(tonumber(event.progress) or 0),
+            keyframeCount
+        )
+    end
+end
+
+local function restoreRigBaseC0()
+    for _, state in ipairs(currentRigs) do
+        for _, jointName in ipairs(JOINTS) do
+            local motor = state.motors[jointName]
+            local baseC0 = state.baseC0[jointName]
+            if motor and baseC0 then
+                pcall(function()
+                    motor.C0 = baseC0
+                end)
+            end
+        end
+    end
+end
+
+local function resetSessionUi(restorePose)
     running = false
-    awaitingApproval = false
     sessionId = nil
     liveFrameQueue = {}
-    checkpointReceived = false
+    pendingFramesByTime = {}
     completionReceived = false
     cancelActiveTweens()
-    restoreRigBaseC0()
+    if restorePose then
+        restoreRigBaseC0()
+    end
     startButton.Active = not liveFrameRunner
     startButton.AutoButtonColor = not liveFrameRunner
-    approveButton.Visible = false
     cancelButton.Visible = false
 end
 
@@ -616,87 +694,81 @@ local function handleEvent(event)
     local eventType = event.type
 
     if eventType == "status" then
-        log("Estado del servidor: " .. tostring(event.status or event.message or "trabajando"))
+        log("Estado: " .. tostring(event.status or event.message or "trabajando"))
         statusLabel.Text = event.message or ("Estado: " .. tostring(event.status or "trabajando"))
         if event.progress then
-            progressLabel.Text = string.format("Progreso: %d%% · Keyframes: %d", event.progress, keyframeCount)
+            progressLabel.Text = string.format(
+                "Progreso: %d%% · Frames sincronizados: %d",
+                event.progress,
+                keyframeCount
+            )
         end
         return
     end
 
     if eventType == "meta" then
-        log("Metadatos recibidos: " .. tostring(event.name or "animación"))
-        if not currentSequence then
-            createSequence(event.name)
+        log(string.format(
+            'La IA inició "%s" para %d rig(s), duración %.2fs.',
+            tostring(event.name or "animación"),
+            expectedRigCount,
+            tonumber(event.duration) or 0
+        ))
+        for _, state in ipairs(currentRigs) do
+            createSequence(state, event.name)
         end
-        statusLabel.Text = "Generando: " .. tostring(event.name)
+        statusLabel.Text = "La IA está construyendo una sola línea de tiempo para los Dummys…"
         return
     end
 
     if eventType == "joint" then
+        local state = rigsById[event.rigId]
+        local rigName = state and state.model.Name or tostring(event.rigId)
         local partName = JOINT_TO_PART[event.joint] or tostring(event.joint)
-        log("Acción de IA recibida: " .. partName .. " (" .. tostring(event.joint) .. ")")
-        queueLiveJointAction(event)
-        progressLabel.Text = string.format(
-            "Progreso: %d%% · Keyframes: %d",
-            math.floor(tonumber(event.progress) or 0),
-            keyframeCount
-        )
+        log(string.format(
+            "IA definió %s para %s en t=%.2fs",
+            partName,
+            rigName,
+            tonumber(event.time) or 0
+        ))
         return
     end
 
     if eventType == "frame" then
-        addSequenceKeyframe(event)
-        keyframeCount += 1
-        log(string.format("Keyframe #%d guardado en la secuencia (t=%.2fs)", keyframeCount, tonumber(event.time) or 0))
-        progressLabel.Text = string.format(
-            "Progreso: %d%% · Keyframes: %d",
-            math.floor(tonumber(event.progress) or 0),
-            keyframeCount
-        )
-        statusLabel.Text = "La IA sigue creando movimientos sobre el dummy…"
+        queueFrameEvent(event)
         return
     end
 
-    if eventType == "keyframe" then
-        -- Compatibilidad con versiones anteriores del servidor.
-        log(string.format("Keyframe completo recibido #%d en t=%.2fs", keyframeCount + 1, tonumber(event.time) or 0))
-        addSequenceKeyframe(event)
-        keyframeCount += 1
-        queueLiveKeyframe(event)
-        progressLabel.Text = string.format("Progreso: %d%% · Keyframes: %d", math.floor(tonumber(event.progress) or 0), keyframeCount)
-        return
-    end
-
-    if eventType == "checkpoint" then
-        log("Checkpoint del 80% recibido; esperando aprobación.")
-        checkpointReceived = true
-        awaitingApproval = false
-        approveButton.Visible = false
-        statusLabel.Text = "80% generado. Reproduciendo la vista previa antes de pedir tu aprobación…"
-        updateCheckpointAndCompletion()
+    if eventType == "keyframe" and expectedRigCount == 1 then
+        local state = currentRigs[1]
+        if state then
+            keyframeCount += 1
+            addSequenceKeyframe(state, event, keyframeCount)
+            queueSynchronizedFrameGroup({
+                time = event.time,
+                rigs = { [state.rigId] = event }
+            })
+        end
         return
     end
 
     if eventType == "complete" then
-        log("Evento complete recibido.")
+        log("La IA terminó todos los keyframes de la línea de tiempo.")
         completionReceived = true
-        statusLabel.Text = "La IA terminó de generar. Reproduciendo los últimos keyframes…"
-        updateCheckpointAndCompletion()
+        updateCompletion()
         return
     end
 
     if eventType == "error" then
         log("ERROR DEL SERVIDOR: " .. tostring(event.error or "sin detalle"))
         statusLabel.Text = "Error: " .. tostring(event.error or "No se pudo completar la animación.")
-        resetSessionUi()
+        resetSessionUi(true)
         return
     end
 
     if eventType == "cancelled" then
         log("Animación cancelada por el servidor.")
         statusLabel.Text = "Animación cancelada."
-        resetSessionUi()
+        resetSessionUi(true)
     end
 end
 
@@ -713,12 +785,17 @@ local function pollSession()
         if not data then
             log("ERROR consultando eventos: " .. tostring(err))
             statusLabel.Text = "Conexión perdida: " .. tostring(err)
-            resetSessionUi()
+            resetSessionUi(true)
             break
         end
 
         if #(data.events or {}) > 0 then
-            log(string.format("Polling: %d evento(s), estado=%s, progreso=%s%%", #data.events, tostring(data.status), tostring(data.progress or "?")))
+            log(string.format(
+                "Polling: %d evento(s), estado=%s, progreso=%s%%",
+                #data.events,
+                tostring(data.status),
+                tostring(data.progress or "?")
+            ))
         end
 
         for _, event in ipairs(data.events or {}) do
@@ -728,12 +805,12 @@ local function pollSession()
 
         if data.status == "error" or data.status == "cancelled" then
             if running then
-                resetSessionUi()
+                resetSessionUi(true)
             end
             break
         elseif data.status == "complete" then
             completionReceived = true
-            updateCheckpointAndCompletion()
+            updateCompletion()
             break
         end
 
@@ -742,7 +819,9 @@ local function pollSession()
 end
 
 local function beginAnimation()
-    if running then return end
+    if running then
+        return
+    end
 
     local description = prompt.Text:gsub("^%s+", ""):gsub("%s+$", "")
     if #description < 5 then
@@ -750,8 +829,8 @@ local function beginAnimation()
         return
     end
 
-    local rig, rigError, motors = findSelectedRig()
-    if not rig then
+    local rigStates, rigError = findSelectedRigs()
+    if not rigStates then
         statusLabel.Text = rigError
         return
     end
@@ -763,104 +842,100 @@ local function beginAnimation()
         statusLabel.Text = "No se encuentra el servidor local. Ejecuta npm start en la carpeta ia. " .. tostring(healthError)
         return
     end
-
     if not health.apiKeyConfigured then
         statusLabel.Text = "Falta GEMINI_API_KEY en ia/.env."
         return
     end
 
-    currentRig = rig
-    currentMotors = motors
-    currentBaseC0 = {}
-    for _, jointName in ipairs(JOINTS) do
-        currentBaseC0[jointName] = motors[jointName].C0
+    currentRigs = rigStates
+    rigsById = {}
+    expectedRigCount = #currentRigs
+    local rigSnapshots = {}
+    local rigNames = {}
+
+    for _, state in ipairs(currentRigs) do
+        rigsById[state.rigId] = state
+        table.insert(rigSnapshots, inspectRig(state))
+        table.insert(rigNames, state.model.Name)
+        log("Dummy R6 validado: " .. state.model:GetFullName() .. " (" .. state.rigId .. ").")
     end
-    log("Dummy R6 validado: " .. rig:GetFullName() .. " (6 articulaciones).")
-    selectedRigLabel.Text = "Rig: " .. rig.Name .. " (R6)"
-    lastFrameTime = nil
-    currentSequence = nil
+
+    selectedRigLabel.Text = "Rigs: " .. table.concat(rigNames, " + ") .. " (R6)"
     keyframeCount = 0
     lastSequence = 0
     liveFrameQueue = {}
     liveFrameRunner = false
-    checkpointReceived = false
+    pendingFramesByTime = {}
     completionReceived = false
     cancelActiveTweens()
 
     local payload = {
         description = description,
-        rig = inspectRig(rig, motors)
+        rigs = rigSnapshots
     }
 
-    log("Enviando solicitud de animación al servidor...")
+    log("Enviando una sola solicitud para animar " .. tostring(expectedRigCount) .. " Dummy(s) sincronizados...")
     local result, err = requestJson("POST", BASE_URL .. "/api/animations", payload)
     if not result or not result.sessionId then
         log("ERROR iniciando sesión: " .. tostring(err or (result and result.error)))
-        statusLabel.Text = "No se pudo iniciar: " .. tostring(err or result.error)
+        statusLabel.Text = "No se pudo iniciar: " .. tostring(err or (result and result.error))
         return
     end
 
     sessionId = result.sessionId
-    log("Sesión iniciada: " .. tostring(sessionId))
+    log("Sesión sincronizada iniciada: " .. tostring(sessionId))
     running = true
-    awaitingApproval = false
     startButton.Active = false
     startButton.AutoButtonColor = false
-    approveButton.Visible = false
     cancelButton.Visible = true
-    statusLabel.Text = "Petición enviada. Conectando con Antigravity…"
-    progressLabel.Text = "Progreso: 0% · Keyframes: 0"
+    statusLabel.Text = "La IA está planificando y moviendo los Dummys en paralelo…"
+    progressLabel.Text = "Progreso: 0% · Frames sincronizados: 0"
 
     task.spawn(pollSession)
 end
 
-local function approveAnimation()
-    if not running or not awaitingApproval or not sessionId then return end
-
-    approveButton.Visible = false
-    log("Aprobación del usuario enviada.")
-    statusLabel.Text = "Aprobado. Antigravity está terminando el último 20%…"
-
-    local result, err = requestJson(
-        "POST",
-        BASE_URL .. "/api/animations/" .. sessionId .. "/approve",
-        { approved = true }
-    )
-
-    if not result then
-        statusLabel.Text = "No se pudo enviar la aprobación: " .. tostring(err)
-        approveButton.Visible = true
-        return
-    end
-
-    awaitingApproval = false
-end
-
 local function cancelAnimation()
     if not sessionId then
-        resetSessionUi()
+        resetSessionUi(true)
         return
     end
 
     local id = sessionId
     requestJson("POST", BASE_URL .. "/api/animations/" .. id .. "/cancel", {})
     statusLabel.Text = "Cancelando…"
-    resetSessionUi()
+    resetSessionUi(true)
 end
 
 startButton.Activated:Connect(beginAnimation)
-approveButton.Activated:Connect(approveAnimation)
 cancelButton.Activated:Connect(cancelAnimation)
 
 openButton.Click:Connect(function()
     widget.Enabled = not widget.Enabled
 end)
 
+local function updateSelectionLabel()
+    local rigStates, err = findSelectedRigs()
+    if not rigStates then
+        selectedRigLabel.Text = "Rigs: " .. tostring(err)
+        return
+    end
+    local names = {}
+    for _, state in ipairs(rigStates) do
+        table.insert(names, state.model.Name)
+    end
+    selectedRigLabel.Text = "Rigs: " .. table.concat(names, " + ") .. " (R6)"
+end
+
 widget:GetPropertyChangedSignal("Enabled"):Connect(function()
     if widget.Enabled then
-        local rig, err = findSelectedRig()
-        selectedRigLabel.Text = rig and ("Rig: " .. rig.Name .. " (R6)") or ("Rig: " .. tostring(err))
+        updateSelectionLabel()
     end
 end)
 
-log("Plugin cargado. Selecciona un dummy R6 y describe la animación.")
+Selection.SelectionChanged:Connect(function()
+    if widget.Enabled and not running then
+        updateSelectionLabel()
+    end
+end)
+
+log("Plugin cargado. Selecciona uno o dos Dummys R6 para crear animaciones sincronizadas.")
