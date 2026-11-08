@@ -325,28 +325,36 @@ local function toCFrame(pose)
 end
 
 local function getAnimationFolder()
-    local reference = currentRig and currentRig:FindFirstChild("AnimSaves")
-    if reference and reference:IsA("ObjectValue") then
-        local savedFolder = reference.Value
-        if savedFolder and savedFolder:IsA("Folder") and savedFolder.Parent == ServerStorage then
-            animationFolder = savedFolder
-            return animationFolder
-        end
+    if not currentRig then
+        error("No hay un rig seleccionado para guardar la animación.")
     end
 
-    local rigName = currentRig and currentRig.Name or "UnknownRig"
-    local safeRigName = rigName:gsub("[^%w_%-]", "_")
-    local folderName = "R6LiveAnimations_" .. safeRigName
-    local existing = ServerStorage:FindFirstChild(folderName)
-
-    if existing and existing:IsA("Folder") then
-        animationFolder = existing
-        return animationFolder
+    -- El Animation Editor de Studio espera este contenedor exacto:
+    -- ServerStorage.RBX_ANIMSAVES.<nombre del rig>
+    local rootFolder = ServerStorage:FindFirstChild("RBX_ANIMSAVES")
+    if rootFolder and not rootFolder:IsA("Folder") then
+        error("ServerStorage.RBX_ANIMSAVES existe, pero no es una Folder.")
     end
 
-    animationFolder = Instance.new("Folder")
-    animationFolder.Name = folderName
-    animationFolder.Parent = ServerStorage
+    if not rootFolder then
+        rootFolder = Instance.new("Folder")
+        rootFolder.Name = "RBX_ANIMSAVES"
+        rootFolder.Parent = ServerStorage
+    end
+
+    local rigFolder = rootFolder:FindFirstChild(currentRig.Name)
+    if rigFolder and not rigFolder:IsA("Folder") then
+        error("RBX_ANIMSAVES ya contiene un objeto que no es Folder llamado " .. currentRig.Name)
+    end
+
+    if not rigFolder then
+        rigFolder = Instance.new("Folder")
+        rigFolder.Name = currentRig.Name
+        rigFolder.Parent = rootFolder
+    end
+
+    animationFolder = rigFolder
+    log("Carpeta de clips: ServerStorage.RBX_ANIMSAVES." .. currentRig.Name)
     return animationFolder
 end
 
@@ -367,8 +375,16 @@ local function linkAnimationFolderToRig(folder)
 
     local reference = currentRig:FindFirstChild("AnimSaves")
     if reference and not reference:IsA("ObjectValue") then
-        log("El objeto AnimSaves del rig no es ObjectValue; no se puede enlazar la carpeta de clips.")
-        return
+        -- Preserve any legacy folder instead of deleting the user's saved clips.
+        local suffix = 1
+        local legacyName = "AnimSaves_Legacy"
+        while currentRig:FindFirstChild(legacyName) do
+            suffix += 1
+            legacyName = "AnimSaves_Legacy_" .. tostring(suffix)
+        end
+        reference.Name = legacyName
+        log("Se conservó la carpeta AnimSaves anterior como " .. legacyName)
+        reference = nil
     end
 
     if not reference then
@@ -378,7 +394,7 @@ local function linkAnimationFolderToRig(folder)
     end
 
     reference.Value = folder
-    log("Carpeta de animaciones enlazada al rig mediante AnimSaves.")
+    log("AnimSaves apunta a ServerStorage.RBX_ANIMSAVES." .. currentRig.Name)
 end
 
 local function createSequence(name)
