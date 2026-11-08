@@ -43,6 +43,8 @@ export function validateRigSnapshot(rig) {
     return {
         rigName: String(rig.rigName || "R6"),
         rigType: "R6",
+        worldPosition: rig.worldPosition || null,
+        worldPivot: rig.worldPivot || null,
         joints: Object.fromEntries(R6_JOINTS.map((name) => [name, rig.joints[name]])),
         parts: Object.fromEntries(R6_PARTS.map((name) => [name, rig.parts[name]]))
     };
