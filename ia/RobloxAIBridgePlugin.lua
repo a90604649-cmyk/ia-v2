@@ -120,6 +120,31 @@ local selectedRigLabel = makeLabel("Rig: buscando dummy R6…", 22, Color3.fromR
 local statusLabel = makeLabel("Conecta el servidor local y selecciona un dummy R6.", 42, Color3.fromRGB(220, 222, 228), false)
 local progressLabel = makeLabel("Progreso: 0% · Keyframes: 0", 22, Color3.fromRGB(174, 190, 214), false)
 
+local logPanel = Instance.new("TextLabel")
+logPanel.Name = "DebugLogs"
+logPanel.Size = UDim2.new(1, 0, 0, 116)
+logPanel.BackgroundColor3 = Color3.fromRGB(18, 20, 25)
+logPanel.BorderSizePixel = 0
+logPanel.TextColor3 = Color3.fromRGB(170, 205, 180)
+logPanel.Font = Enum.Font.Code
+logPanel.TextSize = 11
+logPanel.TextWrapped = true
+logPanel.TextXAlignment = Enum.TextXAlignment.Left
+logPanel.TextYAlignment = Enum.TextYAlignment.Top
+logPanel.Text = "LOGS DEL PLUGIN\\nEsperando actividad..."
+logPanel.Parent = root
+
+local pluginLogs = {}
+local function log(message)
+    local line = os.date("%H:%M:%S") .. "  " .. tostring(message)
+    print("[R6 Live Animator] " .. line)
+    table.insert(pluginLogs, line)
+    while #pluginLogs > 9 do
+        table.remove(pluginLogs, 1)
+    end
+    logPanel.Text = "LOGS DEL PLUGIN\\n" .. table.concat(pluginLogs, "\\n")
+end
+
 local function makeButton(text, color)
     local button = Instance.new("TextButton")
     button.Size = UDim2.new(1, 0, 0, 36)
@@ -370,11 +395,13 @@ local function applyLiveKeyframeNow(data)
     end
 
     local frameTweens = {}
+    local appliedJoints = 0
     for _, jointName in ipairs(JOINTS) do
         local motor = currentMotors[jointName]
         local pose = data.joints[jointName]
 
         if motor and pose then
+            appliedJoints += 1
             local target = toCFrame(pose)
             if transition <= 0 then
                 motor.Transform = target
@@ -397,6 +424,7 @@ local function applyLiveKeyframeNow(data)
 
     lastFrameTime = data.time
     activeTweens = {}
+    log(string.format("Keyframe aplicado en %.2fs (%d/%d articulaciones)", data.time, appliedJoints, #JOINTS))
 end
 
 local function updateCheckpointAndCompletion()
@@ -461,6 +489,7 @@ local function handleEvent(event)
     local eventType = event.type
 
     if eventType == "status" then
+        log("Estado del servidor: " .. tostring(event.status or event.message or "trabajando"))
         statusLabel.Text = event.message or ("Estado: " .. tostring(event.status or "trabajando"))
         if event.progress then
             progressLabel.Text = string.format("Progreso: %d%% · Keyframes: %d", event.progress, keyframeCount)
@@ -469,6 +498,7 @@ local function handleEvent(event)
     end
 
     if eventType == "meta" then
+        log("Metadatos recibidos: " .. tostring(event.name or "animación"))
         if not currentSequence then
             createSequence(event.name)
         end
@@ -477,6 +507,7 @@ local function handleEvent(event)
     end
 
     if eventType == "keyframe" then
+        log(string.format("Keyframe recibido #%d, tiempo=%.2fs, progreso=%s%%", keyframeCount + 1, tonumber(event.time) or 0, tostring(event.progress or "?")))
         addSequenceKeyframe(event)
         keyframeCount += 1
         queueLiveKeyframe(event)
@@ -490,6 +521,7 @@ local function handleEvent(event)
     end
 
     if eventType == "checkpoint" then
+        log("Checkpoint del 80% recibido; esperando aprobación.")
         checkpointReceived = true
         awaitingApproval = false
         approveButton.Visible = false
@@ -499,6 +531,7 @@ local function handleEvent(event)
     end
 
     if eventType == "complete" then
+        log("Evento complete recibido.")
         completionReceived = true
         statusLabel.Text = "La IA terminó de generar. Reproduciendo los últimos keyframes…"
         updateCheckpointAndCompletion()
@@ -506,12 +539,14 @@ local function handleEvent(event)
     end
 
     if eventType == "error" then
+        log("ERROR DEL SERVIDOR: " .. tostring(event.error or "sin detalle"))
         statusLabel.Text = "Error: " .. tostring(event.error or "No se pudo completar la animación.")
         resetSessionUi()
         return
     end
 
     if eventType == "cancelled" then
+        log("Animación cancelada por el servidor.")
         statusLabel.Text = "Animación cancelada."
         resetSessionUi()
     end
@@ -528,9 +563,14 @@ local function pollSession()
 
         local data, err = requestJson("GET", url)
         if not data then
+            log("ERROR consultando eventos: " .. tostring(err))
             statusLabel.Text = "Conexión perdida: " .. tostring(err)
             resetSessionUi()
             break
+        end
+
+        if #(data.events or {}) > 0 then
+            log(string.format("Polling: %d evento(s), estado=%s, progreso=%s%%", #data.events, tostring(data.status), tostring(data.progress or "?")))
         end
 
         for _, event in ipairs(data.events or {}) do
@@ -568,8 +608,10 @@ local function beginAnimation()
         return
     end
 
+    log("Comprobando servidor local...")
     local health, healthError = requestJson("GET", BASE_URL .. "/health")
     if not health then
+        log("ERROR servidor local: " .. tostring(healthError))
         statusLabel.Text = "No se encuentra el servidor local. Ejecuta npm start en la carpeta ia. " .. tostring(healthError)
         return
     end
@@ -581,6 +623,7 @@ local function beginAnimation()
 
     currentRig = rig
     currentMotors = motors
+    log("Dummy R6 validado: " .. rig:GetFullName() .. " (6 articulaciones).")
     selectedRigLabel.Text = "Rig: " .. rig.Name .. " (R6)"
     lastFrameTime = nil
     currentSequence = nil
@@ -597,13 +640,16 @@ local function beginAnimation()
         rig = inspectRig(rig, motors)
     }
 
+    log("Enviando solicitud de animación al servidor...")
     local result, err = requestJson("POST", BASE_URL .. "/api/animations", payload)
     if not result or not result.sessionId then
+        log("ERROR iniciando sesión: " .. tostring(err or (result and result.error)))
         statusLabel.Text = "No se pudo iniciar: " .. tostring(err or result.error)
         return
     end
 
     sessionId = result.sessionId
+    log("Sesión iniciada: " .. tostring(sessionId))
     running = true
     awaitingApproval = false
     startButton.Active = false
@@ -620,7 +666,8 @@ local function approveAnimation()
     if not running or not awaitingApproval or not sessionId then return end
 
     approveButton.Visible = false
-    statusLabel.Text = "Aprobado. Gemini está terminando el último 20%…"
+    log("Aprobación del usuario enviada.")
+    statusLabel.Text = "Aprobado. Antigravity está terminando el último 20%…"
 
     local result, err = requestJson(
         "POST",
@@ -664,4 +711,4 @@ widget:GetPropertyChangedSignal("Enabled"):Connect(function()
     end
 end)
 
-print("[R6 Live Animator] Plugin cargado. Selecciona un dummy R6 y describe la animación.")
+log("Plugin cargado. Selecciona un dummy R6 y describe la animación.")
