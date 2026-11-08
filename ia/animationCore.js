@@ -73,7 +73,7 @@ export function parseAnimationLine(rawLine, stage) {
             const clean = {};
             for (const field of NUMBER_FIELDS) {
                 const max = field === "x" || field === "y" || field === "z"
-                    ? (jointName === "RootJoint" ? 2 : 0.25)
+                    ? (jointName === "RootJoint" ? 4 : 0.25)
                     : 180;
                 clean[field] = clampNumber(
                     pose[field] ?? 0,
