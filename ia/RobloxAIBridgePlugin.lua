@@ -350,10 +350,15 @@ local function inspectRig(state)
         }
     end
 
+    local pivotPosition = rig:GetPivot().Position
+    local pivotCFrame = rig:GetPivot()
+
     return {
         rigId = state.rigId,
         rigName = rig.Name,
         rigType = "R6",
+        worldPosition = vectorToObject(pivotPosition),
+        worldPivot = frameToArray(pivotCFrame),
         parts = partData,
         joints = jointData
     }
