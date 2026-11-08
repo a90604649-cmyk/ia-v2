@@ -563,6 +563,10 @@ local function applySynchronizedFrameGroup(group)
         end
     end
 
+    if not running then
+        return
+    end
+
     log(string.format(
         "Frame sincronizado t=%.3fs · %d Dummy(s) · %d articulaciones",
         tonumber(group.time) or 0,
