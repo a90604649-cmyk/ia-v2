@@ -535,17 +535,24 @@ local function applySynchronizedFrameGroup(group)
             entry.tween:Play()
         end)
         if not played then
+            pcall(function() entry.tween:Cancel() end)
             entry.motor.C0 = entry.target
-            movedJoints += 1
+            entry.started = false
+            if activeTweens[entry.motor] == entry.tween then
+                activeTweens[entry.motor] = nil
+            end
         else
-            movedJoints += 1
+            entry.started = true
         end
+        movedJoints += 1
     end
 
     for _, entry in ipairs(tweens) do
-        pcall(function()
-            entry.tween.Completed:Wait()
-        end)
+        if entry.started then
+            pcall(function()
+                entry.tween.Completed:Wait()
+            end)
+        end
         if activeTweens[entry.motor] == entry.tween then
             activeTweens[entry.motor] = nil
         end
