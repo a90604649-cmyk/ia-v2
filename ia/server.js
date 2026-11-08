@@ -23,6 +23,7 @@ function emit(session, event) {
 function failSession(session, error) {
     if (session.status === "cancelled") return;
     session.status = "error";
+    console.error(`[SESIÓN ${session.id}] ERROR: ${error instanceof Error ? error.message : String(error)}`);
     session.error = error instanceof Error ? error.message : String(error);
     emit(session, { type: "error", status: "error", error: session.error });
 }
@@ -40,9 +41,8 @@ app.get("/health", (_req, res) => {
     res.json({
         ok: true,
         service: "R6 Live Animator",
-        provider: "Gemini API",
-        model: process.env.GEMINI_MODEL || "gemini-4-argon",
-        thinkingLevel: process.env.GEMINI_THINKING_LEVEL || "HIGH",
+        provider: "Antigravity Interactions API",
+        agent: process.env.ANTIGRAVITY_AGENT || "antigravity-preview-latest",
         apiKeyConfigured: Boolean(process.env.GEMINI_API_KEY)
     });
 });
@@ -76,6 +76,7 @@ app.post("/api/animations", async (req, res) => {
 
         session.emit = (event) => emit(session, event);
         sessions.set(id, session);
+        console.log(`[SESIÓN ${id}] Nueva animación R6: "${description.slice(0, 120)}"`);
         emit(session, { type: "status", status: "queued", progress: 0 });
 
         generatePreview(session).catch((error) => failSession(session, error));
@@ -99,6 +100,7 @@ app.get("/api/animations/:id/events", (req, res) => {
 
     const after = Math.max(0, Number(req.query.after) || 0);
     const events = session.events.filter((event) => event.sequence > after);
+    if (events.length) console.log(`[SESIÓN ${session.id}] Plugin recibió ${events.length} evento(s); estado=${session.status}; progreso=${session.progress}%`);
 
     res.set("Cache-Control", "no-store");
     res.json({
@@ -123,6 +125,7 @@ app.post("/api/animations/:id/approve", async (req, res) => {
     }
 
     const feedback = String(req.body?.feedback || "").trim().slice(0, 1500);
+    console.log(`[SESIÓN ${session.id}] Usuario aprobó la vista previa; iniciando acabado final.`);
     session.controller = new AbortController();
 
     generateFinish(session, feedback).catch((error) => failSession(session, error));
@@ -138,6 +141,7 @@ app.post("/api/animations/:id/cancel", (req, res) => {
     const session = getSession(req, res);
     if (!session) return;
 
+    console.log(`[SESIÓN ${session.id}] Usuario canceló la animación.`);
     session.status = "cancelled";
     session.controller.abort();
     emit(session, { type: "cancelled", status: "cancelled" });
@@ -146,7 +150,7 @@ app.post("/api/animations/:id/cancel", (req, res) => {
 
 const server = app.listen(PORT, HOST, () => {
     console.log(`R6 Live Animator escuchando en http://${HOST}:${PORT}`);
-    console.log(`Modelo: ${process.env.GEMINI_MODEL || "gemini-4-argon"} | Razonamiento: ${process.env.GEMINI_THINKING_LEVEL || "HIGH"}`);
+    console.log(`Agente: ${process.env.ANTIGRAVITY_AGENT || "antigravity-preview-latest"} | Proveedor: Antigravity Interactions API`);
 });
 
 function close() {
