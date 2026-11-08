@@ -1,27 +1,19 @@
 {
-  "name": "ia",
-  "version": "1.1.0",
-  "description": "Roblox AI bridge with OmniRoute auto-routing for reasoning, coding and R6 animation generation",
+  "name": "r6-live-animator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Live R6 animation agent for Roblox Studio, streamed from Gemini",
   "main": "server.js",
   "scripts": {
-    "start": "node start.js"
+    "start": "node server.js",
+    "test": "node --test"
   },
-  "keywords": [
-    "roblox",
-    "luau",
-    "omniroute",
-    "coding",
-    "reasoning",
-    "animations"
-  ],
-  "author": "",
-  "license": "ISC",
   "type": "module",
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
-    "dotenv": "^16.0.0",
-    "express": "^5.0.0"
+    "dotenv": "^16.6.1",
+    "express": "^5.2.1"
   }
 }
