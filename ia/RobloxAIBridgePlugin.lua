@@ -368,14 +368,45 @@ local function makePose(parent, name, cframe)
     return pose
 end
 
+local function migrateSavedSequences(sourceFolder, targetFolder)
+    if not sourceFolder or not sourceFolder:IsA("Folder") or sourceFolder == targetFolder then
+        return
+    end
+
+    local migrated = 0
+    for _, child in ipairs(sourceFolder:GetChildren()) do
+        if child:IsA("KeyframeSequence") or child:IsA("CurveAnimation") then
+            local baseName = child.Name
+            local targetName = baseName
+            local suffix = 1
+            while targetFolder:FindFirstChild(targetName) do
+                targetName = baseName .. "_Migrated_" .. tostring(suffix)
+                suffix += 1
+            end
+            child.Name = targetName
+            child.Parent = targetFolder
+            migrated += 1
+        end
+    end
+
+    if migrated > 0 then
+        log(string.format("Se migraron %d clip(s) a RBX_ANIMSAVES.", migrated))
+    end
+end
+
 local function linkAnimationFolderToRig(folder)
     if not currentRig or not currentRig.Parent then
         return
     end
 
     local reference = currentRig:FindFirstChild("AnimSaves")
-    if reference and not reference:IsA("ObjectValue") then
+    local previousFolder = nil
+
+    if reference and reference:IsA("ObjectValue") then
+        previousFolder = reference.Value
+    elseif reference and reference:IsA("Folder") then
         -- Preserve any legacy folder instead of deleting the user's saved clips.
+        previousFolder = reference
         local suffix = 1
         local legacyName = "AnimSaves_Legacy"
         while currentRig:FindFirstChild(legacyName) do
@@ -385,6 +416,9 @@ local function linkAnimationFolderToRig(folder)
         reference.Name = legacyName
         log("Se conservó la carpeta AnimSaves anterior como " .. legacyName)
         reference = nil
+    elseif reference then
+        log("AnimSaves tiene un tipo inesperado; no se reemplazó para evitar borrar datos.")
+        return
     end
 
     if not reference then
@@ -393,6 +427,7 @@ local function linkAnimationFolderToRig(folder)
         reference.Parent = currentRig
     end
 
+    migrateSavedSequences(previousFolder, folder)
     reference.Value = folder
     log("AnimSaves apunta a ServerStorage.RBX_ANIMSAVES." .. currentRig.Name)
 end
