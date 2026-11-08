@@ -14,7 +14,7 @@ Animador de IA para Roblox Studio. El dummy R6 seleccionado es el espacio de tra
 
 ## Requisitos
 
-- Roblox Studio actualizado con soporte para `HttpService:CreateWebStreamClient` no es obligatorio en esta versión: el plugin consulta el puente local cada 300 ms.
+- El plugin de Studio debe permitir comunicación HTTP con el puente local; consulta `http://127.0.0.1:3000` cada 300 ms.
 - Node.js 18 o superior.
 - Una clave Gemini API con acceso al modelo `gemini-4-argon`.
 - Permitir al plugin comunicarse con `http://127.0.0.1:3000` cuando Studio lo solicite.
