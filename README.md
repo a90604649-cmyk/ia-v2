@@ -1,100 +1,65 @@
-# Roblox AI Bridge
+# R6 Live Animator
 
-Puente Node.js para Roblox Studio con **OmniRoute como único proveedor**. OmniRoute expone una API compatible con OpenAI y con `model=auto` se encarga de seleccionar el proveedor/modelo disponible.
+Animador de IA para Roblox Studio. El dummy R6 seleccionado es el espacio de trabajo: la IA genera poses/keyframes de forma incremental y el plugin los aplica al rig mientras llegan. No crea primero un archivo terminado para importarlo al final.
 
-El mismo flujo sirve para conversación, razonamiento de programación, corrección de bugs, creación de sistemas, cambios en varios scripts y generación de animaciones R6.
+## Comportamiento
 
-## Configuración
+1. Seleccionar un Model R6 en Roblox Studio.
+2. Escribir una descripción de movimiento en el panel del plugin.
+3. El plugin inspecciona las seis articulaciones R6 y las dimensiones/transformaciones de las partes.
+4. Gemini 4 Argon transmite keyframes NDJSON al servidor local.
+5. El plugin aplica cada keyframe al dummy en el viewport y actualiza una `KeyframeSequence` incrementalmente.
+6. En el 80%, el sistema se detiene y espera la aprobación.
+7. Al aprobar, Argon genera el tramo final y termina la secuencia.
 
-Usa Node.js 18 o superior.
+## Requisitos
 
-Crea `ia/.env` a partir de `ia/.env.example`:
+- Roblox Studio actualizado con soporte para `HttpService:CreateWebStreamClient` no es obligatorio en esta versión: el plugin consulta el puente local cada 300 ms.
+- Node.js 18 o superior.
+- Una clave Gemini API con acceso al modelo `gemini-4-argon`.
+- Permitir al plugin comunicarse con `http://127.0.0.1:3000` cuando Studio lo solicite.
 
-```env
-OMNIROUTE_API_KEY=tu_clave_de_omniroute
-OMNIROUTE_URL=http://127.0.0.1:20128/v1/chat/completions
-OMNIROUTE_MODEL=auto
-OMNIROUTE_ENABLED=true
-OMNIROUTE_TIMEOUT_MS=300000
-OMNIROUTE_PROGRESS=true
+## Configuración local
 
-PORT=3000
-PROJECT_CONTEXT_PORT=3001
-PROJECT_CONTEXT_HOST=0.0.0.0
+Desde la carpeta `ia`:
+
+```powershell
+Copy-Item .env.example .env
 ```
 
-La `OMNIROUTE_API_KEY` es la clave generada en OmniRoute en **Endpoints / Claves registradas**. No guardes la clave real en Git.
+Edita `.env` y coloca tu clave:
 
-No subas `.env` al repositorio.
+```env
+GEMINI_API_KEY=tu_clave
+GEMINI_MODEL=gemini-4-argon
+GEMINI_THINKING_LEVEL=HIGH
+HOST=127.0.0.1
+PORT=3000
+```
 
-## Ejecución
+No guardes ni compartas la clave en el archivo Lua del plugin ni en Git.
 
-Desde `ia/`:
+Instala y ejecuta:
 
-```bash
+```powershell
 npm install
 npm start
 ```
 
-El servidor queda en `http://127.0.0.1:3000` y el contexto del proyecto en `http://127.0.0.1:3001`.
+## Instalar el plugin
 
-## Flujo de programación
+Carga `ia/RobloxAIBridgePlugin.lua` como plugin local de Roblox Studio. Selecciona el dummy R6 y abre **R6 Live Animator** desde la barra de herramientas.
 
-Usuario → Roblox AI Bridge → **OmniRoute (`model=auto`)** → proveedor/modelo seleccionado → análisis del proyecto real → cambios → validación → Roblox Studio.
+## Estado de esta versión
 
-No existe fallback directo a otro proveedor: si OmniRoute no está disponible, el Bridge informa del error en lugar de cambiar de proveedor por su cuenta.
+Esta es la base inicial del pipeline en vivo. La comprobación real de movimiento en viewport, la creación incremental de `KeyframeSequence` y la pausa al 80% deben validarse en Roblox Studio con un dummy R6 real antes de considerar la versión estable.
 
-## Scripts
+## Estructura
 
-- `create_script`
-- `create_local_script`
-- `create_module_script`
-- `update_script`
-- `update_local_script`
-- `update_module_script`
-- `delete_script`
-- `delete_local_script`
-- `delete_module_script`
-
-## Remotes y carpetas
-
-- `create_remote_event`
-- `create_remote_function`
-- `delete_remote_event`
-- `delete_remote_function`
-- `create_folder`
-- `delete_folder`
-
-## Instancias y propiedades
-
-El bridge acepta acciones extendidas para trabajar con objetos de Roblox:
-
-- `create_instance`
-- `delete_instance`
-- `set_property`
-- `set_properties`
-- `rename_instance`
-- `move_instance`
-
-Las acciones extendidas pueden crear y configurar objetos como `Part`, `MeshPart`, `Model`, `Tool`, `RemoteEvent`, `RemoteFunction`, `Folder`, GUI, `Attachment`, `Motor6D` y otros tipos soportados por el plugin.
-
-Para propiedades se admiten valores normales y valores tipados como `Vector2`, `Vector3`, `Color3`, `CFrame`, `UDim2`, `BrickColor` y `Enum`.
-
-## Project Context
-
-El plugin escanea `Script`, `LocalScript`, `ModuleScript` y un catálogo limitado de objetos importantes para que la IA conozca las rutas reales del proyecto. El escaneo inicial ocurre al conectar y el automático está limitado a una actualización cada 5 minutos.
-
-## Animaciones R6
-
-El pipeline de animaciones R6 conserva la calibración y memoria existentes del proyecto.
-
-## Endpoints
-
-- `GET /` estado general del bridge.
-- `GET /health` estado de configuración del proveedor.
-- `POST /r6-calibration` recibe la calibración R6.
-- `GET /r6-calibration` devuelve la calibración actual.
-- `POST /selected-script` recibe el script seleccionado desde Roblox Studio.
-- `GET /next` entrega y limpia las acciones pendientes para Roblox Studio.
-- `POST /project-scan` recibe el escaneo del proyecto.
-- `GET /project-context` devuelve el contexto relevante para una petición.
+- `ia/RobloxAIBridgePlugin.lua` — interfaz de Studio, inspección R6 y aplicación de keyframes en vivo.
+- `ia/server.js` — API local y sesiones de animación.
+- `ia/modelProvider.js` — conexión segura por servidor con Gemini API y lectura de streaming.
+- `ia/animation.js` — fases de vista previa y acabado tras aprobación.
+- `ia/animationCore.js` — prompts NDJSON, validación y progreso.
+- `ia/animationConfig.js` — reglas de animación R6.
+- `ia/r6.js` — validación de rig R6.
