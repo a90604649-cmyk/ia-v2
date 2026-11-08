@@ -5,6 +5,7 @@ export const PREVIEW_PROGRESS = 80;
 export const MAX_DURATION_SECONDS = 30;
 export const MIN_DURATION_SECONDS = 0.5;
 export const MAX_KEYFRAMES = 120;
+export const MAX_PREVIEW_KEYFRAMES = 32;
 
 export const ANIMATION_SYSTEM = [
     "Eres un director y animador técnico especializado exclusivamente en Roblox R6.",
