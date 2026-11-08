@@ -511,6 +511,7 @@ local function applySynchronizedFrameGroup(group)
                             return TweenService:Create(motor, tweenInfo, { C0 = target })
                         end)
                         if created and tween then
+                            activeTweens[motor] = tween
                             table.insert(tweens, {
                                 tween = tween,
                                 motor = motor,
@@ -545,6 +546,9 @@ local function applySynchronizedFrameGroup(group)
         pcall(function()
             entry.tween.Completed:Wait()
         end)
+        if activeTweens[entry.motor] == entry.tween then
+            activeTweens[entry.motor] = nil
+        end
     end
 
     log(string.format(
