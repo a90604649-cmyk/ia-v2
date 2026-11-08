@@ -151,6 +151,10 @@ local lastFrameTime = nil
 local currentSequence = nil
 local keyframeCount = 0
 local activeTweens = {}
+local liveFrameQueue = {}
+local liveFrameRunner = false
+local checkpointReceived = false
+local completionReceived = false
 local animationFolder = nil
 
 local function requestJson(method, url, payload)
@@ -353,28 +357,23 @@ local function addSequenceKeyframe(data)
     makePose(torsoPose, "Right Leg", toCFrame(data.joints["Right Hip"]))
 end
 
-local function applyLiveKeyframe(data)
+local function applyLiveKeyframeNow(data)
     if not currentRig or not currentRig.Parent then
         return
     end
 
     local transition = 0
     if lastFrameTime ~= nil then
-        transition = math.clamp(data.time - lastFrameTime, 0.18, 1.2)
+        transition = math.clamp(data.time - lastFrameTime, 0.16, 1.0)
     end
 
+    local frameTweens = {}
     for _, jointName in ipairs(JOINTS) do
         local motor = currentMotors[jointName]
         local pose = data.joints[jointName]
 
         if motor and pose then
             local target = toCFrame(pose)
-            if activeTweens[jointName] then
-                pcall(function()
-                    activeTweens[jointName]:Cancel()
-                end)
-            end
-
             if transition <= 0 then
                 motor.Transform = target
             else
@@ -384,18 +383,66 @@ local function applyLiveKeyframe(data)
                     { Transform = target }
                 )
                 activeTweens[jointName] = tween
+                table.insert(frameTweens, tween)
                 tween:Play()
             end
         end
     end
 
+    for _, tween in ipairs(frameTweens) do
+        tween.Completed:Wait()
+    end
+
     lastFrameTime = data.time
+    activeTweens = {}
+end
+
+local function updateCheckpointAndCompletion()
+    if not liveFrameRunner and #liveFrameQueue == 0 then
+        if completionReceived then
+            statusLabel.Text = "Animación terminada. KeyframeSequence editable en ServerStorage/R6LiveAnimations."
+            progressLabel.Text = string.format("Progreso: 100%% · Keyframes: %d", keyframeCount)
+            resetSessionUi()
+        elseif checkpointReceived then
+            awaitingApproval = true
+            approveButton.Visible = true
+            statusLabel.Text = "80% listo. La vista previa terminó; revisa el dummy y aprueba para continuar."
+            progressLabel.Text = string.format("Progreso: 80%% · Keyframes: %d", keyframeCount)
+        end
+    end
+end
+
+local function queueLiveKeyframe(data)
+    table.insert(liveFrameQueue, data)
+    if liveFrameRunner then return end
+
+    liveFrameRunner = true
+    task.spawn(function()
+        while running and #liveFrameQueue > 0 do
+            local frame = table.remove(liveFrameQueue, 1)
+            applyLiveKeyframeNow(frame)
+        end
+
+        liveFrameRunner = false
+        updateCheckpointAndCompletion()
+    end)
+end
+
+local function cancelActiveTweens()
+    for _, tween in pairs(activeTweens) do
+        pcall(function()
+            tween:Cancel()
+        end)
+    end
+    activeTweens = {}
 end
 
 local function resetSessionUi()
     running = false
     awaitingApproval = false
     sessionId = nil
+    liveFrameQueue = {}
+    cancelActiveTweens()
     startButton.Active = true
     startButton.AutoButtonColor = true
     approveButton.Visible = false
@@ -424,7 +471,7 @@ local function handleEvent(event)
     if eventType == "keyframe" then
         addSequenceKeyframe(event)
         keyframeCount += 1
-        applyLiveKeyframe(event)
+        queueLiveKeyframe(event)
         progressLabel.Text = string.format(
             "Progreso: %d%% · Keyframes: %d",
             math.floor(tonumber(event.progress) or 0),
@@ -435,17 +482,18 @@ local function handleEvent(event)
     end
 
     if eventType == "checkpoint" then
-        awaitingApproval = true
-        approveButton.Visible = true
-        statusLabel.Text = "80% completado. Revisa el dummy en el viewport y aprueba para continuar."
-        progressLabel.Text = string.format("Progreso: 80%% · Keyframes: %d", keyframeCount)
+        checkpointReceived = true
+        awaitingApproval = false
+        approveButton.Visible = false
+        statusLabel.Text = "80% generado. Reproduciendo la vista previa antes de pedir tu aprobación…"
+        updateCheckpointAndCompletion()
         return
     end
 
     if eventType == "complete" then
-        progressLabel.Text = string.format("Progreso: 100%% · Keyframes: %d", keyframeCount)
-        statusLabel.Text = "Animación terminada. KeyframeSequence editable en ServerStorage/R6LiveAnimations."
-        resetSessionUi()
+        completionReceived = true
+        statusLabel.Text = "La IA terminó de generar. Reproduciendo los últimos keyframes…"
+        updateCheckpointAndCompletion()
         return
     end
 
@@ -482,10 +530,14 @@ local function pollSession()
             handleEvent(event)
         end
 
-        if data.status == "error" or data.status == "complete" or data.status == "cancelled" then
+        if data.status == "error" or data.status == "cancelled" then
             if running then
                 resetSessionUi()
             end
+            break
+        elseif data.status == "complete" then
+            completionReceived = true
+            updateCheckpointAndCompletion()
             break
         end
 
@@ -526,11 +578,11 @@ local function beginAnimation()
     currentSequence = nil
     keyframeCount = 0
     lastSequence = 0
-
-    for _, tween in pairs(activeTweens) do
-        pcall(function() tween:Cancel() end)
-    end
-    activeTweens = {}
+    liveFrameQueue = {}
+    liveFrameRunner = false
+    checkpointReceived = false
+    completionReceived = false
+    cancelActiveTweens()
 
     local payload = {
         description = description,
