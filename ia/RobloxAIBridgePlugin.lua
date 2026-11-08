@@ -521,6 +521,7 @@ local function beginAnimation()
 
     currentRig = rig
     currentMotors = motors
+    selectedRigLabel.Text = "Rig: " .. rig.Name .. " (R6)"
     lastFrameTime = nil
     currentSequence = nil
     keyframeCount = 0
