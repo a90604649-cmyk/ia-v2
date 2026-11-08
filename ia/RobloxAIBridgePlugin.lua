@@ -461,7 +461,7 @@ local function handleEvent(event)
     local eventType = event.type
 
     if eventType == "status" then
-        statusLabel.Text = "Estado: " .. tostring(event.status or "trabajando")
+        statusLabel.Text = event.message or ("Estado: " .. tostring(event.status or "trabajando"))
         if event.progress then
             progressLabel.Text = string.format("Progreso: %d%% · Keyframes: %d", event.progress, keyframeCount)
         end
@@ -610,7 +610,7 @@ local function beginAnimation()
     startButton.AutoButtonColor = false
     approveButton.Visible = false
     cancelButton.Visible = true
-    statusLabel.Text = "Petición enviada a Gemini 4 Argon. Preparando las primeras poses…"
+    statusLabel.Text = "Petición enviada. Conectando con Antigravity…"
     progressLabel.Text = "Progreso: 0% · Keyframes: 0"
 
     task.spawn(pollSession)
