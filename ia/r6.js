@@ -47,3 +47,23 @@ export function validateRigSnapshot(rig) {
         parts: Object.fromEntries(R6_PARTS.map((name) => [name, rig.parts[name]]))
     };
 }
+
+export function validateRigSnapshots(rigs) {
+    if (!Array.isArray(rigs) || rigs.length < 1 || rigs.length > 2) {
+        throw new Error("Selecciona uno o dos rigs R6 para animarlos.");
+    }
+
+    const usedIds = new Set();
+    return rigs.map((rig, index) => {
+        const snapshot = validateRigSnapshot(rig);
+        const rigId = String(rig?.rigId || `R${index + 1}`).slice(0, 32);
+        if (!/^[A-Za-z0-9_-]+$/.test(rigId)) {
+            throw new Error(`Identificador de rig no válido: ${rigId}`);
+        }
+        if (usedIds.has(rigId)) {
+            throw new Error(`Identificador de rig repetido: ${rigId}`);
+        }
+        usedIds.add(rigId);
+        return { ...snapshot, rigId };
+    });
+}
