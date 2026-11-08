@@ -384,47 +384,39 @@ local function addSequenceKeyframe(data)
     makePose(torsoPose, "Right Leg", toCFrame(data.joints["Right Hip"]))
 end
 
-local function applyLiveKeyframeNow(data)
+local JOINT_STEP_SECONDS = 0.14
+
+local function applyLiveJointAction(action)
     if not currentRig or not currentRig.Parent then
         return
     end
 
-    local transition = 0
-    if lastFrameTime ~= nil then
-        transition = math.clamp(data.time - lastFrameTime, 0.16, 1.0)
+    local jointName = action.joint
+    local partName = JOINT_TO_PART[jointName] or jointName
+    local motor = currentMotors[jointName]
+    if not motor then
+        log("No se encontró Motor6D para " .. tostring(jointName))
+        return
     end
 
-    local frameTweens = {}
-    local appliedJoints = 0
-    for _, jointName in ipairs(JOINTS) do
-        local motor = currentMotors[jointName]
-        local pose = data.joints[jointName]
+    statusLabel.Text = "IA moviendo: " .. partName .. " (" .. jointName .. ")…"
+    local target = toCFrame(action.pose)
 
-        if motor and pose then
-            appliedJoints += 1
-            local target = toCFrame(pose)
-            if transition <= 0 then
-                motor.Transform = target
-            else
-                local tween = TweenService:Create(
-                    motor,
-                    TweenInfo.new(transition, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
-                    { Transform = target }
-                )
-                activeTweens[jointName] = tween
-                table.insert(frameTweens, tween)
-                tween:Play()
-            end
+    if motor.Transform ~= target then
+        local tween = TweenService:Create(
+            motor,
+            TweenInfo.new(JOINT_STEP_SECONDS, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+            { Transform = target }
+        )
+        activeTweens[jointName] = tween
+        tween:Play()
+        tween.Completed:Wait()
+        if activeTweens[jointName] == tween then
+            activeTweens[jointName] = nil
         end
     end
 
-    for _, tween in ipairs(frameTweens) do
-        tween.Completed:Wait()
-    end
-
-    lastFrameTime = data.time
-    activeTweens = {}
-    log(string.format("Keyframe aplicado en %.2fs (%d/%d articulaciones)", data.time, appliedJoints, #JOINTS))
+    log(string.format("IA movió %s en t=%.2fs", partName, tonumber(action.time) or 0))
 end
 
 local function updateCheckpointAndCompletion()
@@ -442,15 +434,15 @@ local function updateCheckpointAndCompletion()
     end
 end
 
-local function queueLiveKeyframe(data)
-    table.insert(liveFrameQueue, data)
+local function queueLiveJointAction(action)
+    table.insert(liveFrameQueue, action)
     if liveFrameRunner then return end
 
     liveFrameRunner = true
     task.spawn(function()
         while running and #liveFrameQueue > 0 do
-            local frame = table.remove(liveFrameQueue, 1)
-            applyLiveKeyframeNow(frame)
+            local nextAction = table.remove(liveFrameQueue, 1)
+            applyLiveJointAction(nextAction)
         end
 
         liveFrameRunner = false
@@ -460,6 +452,17 @@ local function queueLiveKeyframe(data)
         end
         updateCheckpointAndCompletion()
     end)
+end
+
+local function queueLiveKeyframe(data)
+    for _, jointName in ipairs(JOINTS) do
+        queueLiveJointAction({
+            type = "joint",
+            time = data.time,
+            joint = jointName,
+            pose = data.joints[jointName]
+        })
+    end
 end
 
 local function cancelActiveTweens()
@@ -506,17 +509,38 @@ local function handleEvent(event)
         return
     end
 
-    if eventType == "keyframe" then
-        log(string.format("Keyframe recibido #%d, tiempo=%.2fs, progreso=%s%%", keyframeCount + 1, tonumber(event.time) or 0, tostring(event.progress or "?")))
-        addSequenceKeyframe(event)
-        keyframeCount += 1
-        queueLiveKeyframe(event)
+    if eventType == "joint" then
+        local partName = JOINT_TO_PART[event.joint] or tostring(event.joint)
+        log("Acción de IA recibida: " .. partName .. " (" .. tostring(event.joint) .. ")")
+        queueLiveJointAction(event)
         progressLabel.Text = string.format(
             "Progreso: %d%% · Keyframes: %d",
             math.floor(tonumber(event.progress) or 0),
             keyframeCount
         )
-        statusLabel.Text = "La IA está construyendo la animación sobre el dummy…"
+        return
+    end
+
+    if eventType == "frame" then
+        addSequenceKeyframe(event)
+        keyframeCount += 1
+        log(string.format("Keyframe #%d guardado en la secuencia (t=%.2fs)", keyframeCount, tonumber(event.time) or 0))
+        progressLabel.Text = string.format(
+            "Progreso: %d%% · Keyframes: %d",
+            math.floor(tonumber(event.progress) or 0),
+            keyframeCount
+        )
+        statusLabel.Text = "La IA sigue creando movimientos sobre el dummy…"
+        return
+    end
+
+    if eventType == "keyframe" then
+        -- Compatibilidad con versiones anteriores del servidor.
+        log(string.format("Keyframe completo recibido #%d en t=%.2fs", keyframeCount + 1, tonumber(event.time) or 0))
+        addSequenceKeyframe(event)
+        keyframeCount += 1
+        queueLiveKeyframe(event)
+        progressLabel.Text = string.format("Progreso: %d%% · Keyframes: %d", math.floor(tonumber(event.progress) or 0), keyframeCount)
         return
     end
 
