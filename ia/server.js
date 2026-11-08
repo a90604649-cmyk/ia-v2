@@ -1,8 +1,8 @@
 import "dotenv/config";
 import express from "express";
 import { randomUUID } from "node:crypto";
-import { validateRigSnapshot } from "./r6.js";
-import { generatePreview, generateFinish } from "./animation.js";
+import { validateRigSnapshots } from "./r6.js";
+import { generateAnimation } from "./animation.js";
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -10,7 +10,7 @@ app.use(express.json({ limit: "1mb" }));
 const PORT = Math.max(1, Number(process.env.PORT || 3000));
 const HOST = process.env.HOST || "127.0.0.1";
 const sessions = new Map();
-const MAX_EVENTS_PER_SESSION = 1000;
+const MAX_EVENTS_PER_SESSION = 5000;
 
 function emit(session, event) {
     session.sequence += 1;
@@ -57,13 +57,15 @@ app.post("/api/animations", async (req, res) => {
             });
         }
 
-        const rig = validateRigSnapshot(req.body?.rig);
+        const inputRigs = Array.isArray(req.body?.rigs) ? req.body.rigs : [req.body?.rig];
+        const rigs = validateRigSnapshots(inputRigs);
         const id = randomUUID();
 
         const session = {
             id,
             description,
-            rig,
+            rigs,
+            rig: rigs[0],
             status: "queued",
             progress: 0,
             sequence: 0,
@@ -76,10 +78,10 @@ app.post("/api/animations", async (req, res) => {
 
         session.emit = (event) => emit(session, event);
         sessions.set(id, session);
-        console.log(`[SESIÓN ${id}] Nueva animación R6: "${description.slice(0, 120)}"`);
+        console.log(`[SESIÓN ${id}] Nueva animación R6 para ${rigs.length} rig(s): "${description.slice(0, 120)}"`);
         emit(session, { type: "status", status: "queued", progress: 0 });
 
-        generatePreview(session).catch((error) => failSession(session, error));
+        generateAnimation(session).catch((error) => failSession(session, error));
 
         return res.status(202).json({
             ok: true,
@@ -110,30 +112,6 @@ app.get("/api/animations/:id/events", (req, res) => {
         progress: session.progress,
         latestSequence: session.sequence,
         events
-    });
-});
-
-app.post("/api/animations/:id/approve", async (req, res) => {
-    const session = getSession(req, res);
-    if (!session) return;
-
-    if (session.status !== "awaiting_approval") {
-        return res.status(409).json({
-            ok: false,
-            error: "La sesión todavía no está esperando aprobación."
-        });
-    }
-
-    const feedback = String(req.body?.feedback || "").trim().slice(0, 1500);
-    console.log(`[SESIÓN ${session.id}] Usuario aprobó la vista previa; iniciando acabado final.`);
-    session.controller = new AbortController();
-
-    generateFinish(session, feedback).catch((error) => failSession(session, error));
-
-    return res.status(202).json({
-        ok: true,
-        status: "finishing",
-        message: "Aprobación recibida. Se está generando el acabado final."
     });
 });
 
