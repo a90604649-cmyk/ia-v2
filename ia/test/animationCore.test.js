@@ -13,6 +13,35 @@ test("accepts a valid preview meta event", () => {
     assert.equal(result.previewFrames, 12);
 });
 
+test("accepts RootJoint translation up to 4 studs for jumps", () => {
+    const joints = Object.fromEntries(
+        R6_JOINTS.map((name) => [
+            name,
+            { x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0 }
+        ])
+    );
+    joints.RootJoint.y = -2.7;
+    const result = parseAnimationLine(
+        JSON.stringify({ type: "keyframe", time: 0.7, joints }),
+        "preview"
+    );
+    assert.equal(result.joints.RootJoint.y, -2.7);
+});
+
+test("still rejects excessive RootJoint translation", () => {
+    const joints = Object.fromEntries(
+        R6_JOINTS.map((name) => [
+            name,
+            { x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0 }
+        ])
+    );
+    joints.RootJoint.y = -4.1;
+    assert.throws(() => parseAnimationLine(
+        JSON.stringify({ type: "keyframe", time: 0.7, joints }),
+        "preview"
+    ), /RootJoint.y/);
+});
+
 test("rejects a keyframe that omits an R6 joint", () => {
     const joints = Object.fromEntries(
         R6_JOINTS.slice(0, 5).map((name) => [
