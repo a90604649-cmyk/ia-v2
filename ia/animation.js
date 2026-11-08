@@ -25,6 +25,8 @@ function consumeLines(buffer, chunk, stage, onMessage) {
 
 export async function generatePreview(session) {
     session.status = "generating_preview";
+    console.log(`[SESIÓN ${session.id}] Fase 1/2: conectando con Antigravity para generar la vista previa.`);
+    session.emit({ type: "status", status: "connecting_ai", message: "Conectando con Antigravity…", progress: 5 });
     session.emit({ type: "status", status: session.status, progress: 5 });
 
     let buffer = "";
@@ -37,10 +39,16 @@ export async function generatePreview(session) {
         prompt: buildPreviewPrompt(session.description, session.rig),
         signal: session.controller.signal,
         onText(chunk) {
+            if (!session.firstModelChunkLogged) {
+                session.firstModelChunkLogged = true;
+                console.log(`[SESIÓN ${session.id}] Antigravity comenzó a enviar texto.`);
+                session.emit({ type: "status", status: "receiving_ai", message: "La IA está respondiendo; esperando keyframes válidos…", progress: 8 });
+            }
             buffer = consumeLines(buffer, chunk, "preview", (message) => {
                 if (message.type === "meta") {
                     meta = message;
                     session.meta = message;
+                    console.log(`[SESIÓN ${session.id}] Metadatos recibidos: "${message.name}", duración ${message.duration}s, objetivo ${message.previewFrames} keyframes.`);
                     session.emit({ ...message, progress: 10 });
                     return;
                 }
@@ -59,6 +67,7 @@ export async function generatePreview(session) {
                     lastTime = message.time;
                     receivedFrames += 1;
                     session.keyframes.set(message.time, message);
+                    console.log(`[SESIÓN ${session.id}] Keyframe ${receivedFrames}/${meta.previewFrames} recibido en t=${message.time}s.`);
                     const progress = getPreviewProgress(receivedFrames, meta.previewFrames);
                     session.emit({
                         ...message,
@@ -97,6 +106,7 @@ export async function generatePreview(session) {
     session.meta = meta;
     session.progress = PREVIEW_PROGRESS;
     session.status = "awaiting_approval";
+    console.log(`[SESIÓN ${session.id}] Vista previa lista: ${session.keyframes.size} keyframes. Esperando aprobación.`);
     session.emit({
         type: "checkpoint",
         status: session.status,
@@ -108,6 +118,7 @@ export async function generatePreview(session) {
 
 export async function generateFinish(session, feedback = "") {
     session.status = "finishing";
+    console.log(`[SESIÓN ${session.id}] Fase 2/2: generando el tramo final.`);
     session.emit({ type: "status", status: session.status, progress: 82 });
 
     let buffer = "";
@@ -135,6 +146,7 @@ export async function generateFinish(session, feedback = "") {
                     lastTime = message.time;
                     addedFrames += 1;
                     session.keyframes.set(message.time, message);
+                    console.log(`[SESIÓN ${session.id}] Keyframe final ${addedFrames} recibido en t=${message.time}s.`);
                     session.emit({
                         ...message,
                         progress: Math.min(99, 80 + addedFrames * 4)
@@ -167,6 +179,7 @@ export async function generateFinish(session, feedback = "") {
     }
 
     session.status = "complete";
+    console.log(`[SESIÓN ${session.id}] Animación completa: ${session.keyframes.size} keyframes.`);
     session.progress = 100;
     session.emit({
         type: "complete",
