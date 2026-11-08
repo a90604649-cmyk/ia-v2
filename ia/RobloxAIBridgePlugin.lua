@@ -89,7 +89,7 @@ local function makeLabel(text, height, color, bold)
 end
 
 local title = makeLabel("R6 LIVE ANIMATOR", 28, Color3.fromRGB(255, 255, 255), true)
-local subtitle = makeLabel("La IA moverá el dummy mientras construye los keyframes.", 34)
+local subtitle = makeLabel("La IA mueve cada parte en el viewport mientras crea los keyframes.", 34)
 
 local prompt = Instance.new("TextBox")
 prompt.Name = "AnimationDescription"
